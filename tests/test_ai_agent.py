@@ -7,7 +7,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 from pcb_analyzer.ai_agent import OllamaClient, OllamaError, parse_ai_response, ask_ai_async  # noqa: E402
 from pcb_analyzer.testpoints import TestPointStore, TestPoint  # noqa: E402
 from pcb_analyzer.model import Board, Component  # noqa: E402
-from pcb_analyzer.ai_agent import build_context, format_ai_reply  # noqa: E402
+from pcb_analyzer.ai_agent import build_context, format_ai_reply, apply_safety_policy  # noqa: E402
 
 class InlineThread:
     def __init__(self, target, **_kwargs): self.target = target
@@ -43,6 +43,24 @@ class TestAIResponse(unittest.TestCase):
         ask_ai_async(client, "hi", None, TestPointStore(), callback)
         callback.assert_called_once()
         self.assertIn("late", callback.call_args.args[0]["error"])
+
+    def test_safety_filter_blocks_unsafe_input_voltage_increase(self):
+        unsafe = {"message": "Increase the input voltage to 15 V. Check U1 output.",
+                  "suspect_components": ["U1"],
+                  "suggested_tests": ["Raise input voltage to 15 V", "Measure U1 output"]}
+        filtered = apply_safety_policy(unsafe, "من ورودی ۱۲ ولت می‌دهم")
+        self.assertNotIn("15 V", filtered["message"])
+        self.assertNotIn("15 V", " ".join(filtered["suggested_tests"]))
+        self.assertIn("افزایش ندهید", filtered["message"])
+        self.assertEqual(filtered["suggested_tests"], ["Measure U1 output"])
+
+    def test_safety_filter_keeps_warnings_against_higher_voltage(self):
+        cautious = {"message": "Do not increase the input voltage.", "suggested_tests": []}
+        self.assertEqual(apply_safety_policy(cautious)["message"], cautious["message"])
+        persian = {"message": "ولتاژ ورودی را به ۱۵ ولت افزایش دهید.", "suggested_tests": []}
+        filtered_persian = apply_safety_policy(persian, "فارسی")
+        self.assertNotIn("۱۵ ولت", filtered_persian["message"])
+        self.assertIn("افزایش ندهید", filtered_persian["message"])
 
     def test_reply_format_contains_only_answer_and_tests(self):
         reply = format_ai_reply({"message": "پاسخ", "suggested_tests": ["اندازه‌گیری ولتاژ"]})

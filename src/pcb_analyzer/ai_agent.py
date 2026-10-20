@@ -128,9 +128,10 @@ You are diagnosing a PCB based on the provided context.
 You must reply with valid JSON only, no markdown, no conversational text.
 
 CRITICAL INSTRUCTIONS:
-1. LANGUAGE: You MUST reply in the EXACT SAME LANGUAGE that the user used to ask their question. If they ask in English, reply in English. If they ask in Persian (Farsi), reply in Persian.
-2. JSON KEYS: The JSON keys MUST ALWAYS BE IN ENGLISH exactly as shown below.
-3. COMPONENT REFERENCES: Component references (like U1, R5) and units (V, A, ohm) MUST remain in English.
+1. SAFETY: Never recommend increasing, bypassing, or raising the input/supply voltage as a troubleshooting step. Never exceed the board, component, adapter, or datasheet voltage ratings. If ratings are unknown, tell the user to keep the specified nominal input (for example, 12 V) and verify it safely; do not guess a higher voltage. Recommend power-off checks before touching or rewiring a board.
+2. LANGUAGE: You MUST reply in the EXACT SAME LANGUAGE that the user used to ask their question. If they ask in English, reply in English. If they ask in Persian (Farsi), reply in Persian.
+3. JSON KEYS: The JSON keys MUST ALWAYS BE IN ENGLISH exactly as shown below.
+4. COMPONENT REFERENCES: Component references (like U1, R5), exact part numbers, and standard units may remain in English.
 
 Schema:
 {
@@ -155,6 +156,46 @@ def _system_prompt_for(user_prompt: str) -> str:
     elif any("\u0600" <= char <= "\u06ff" for char in user_prompt):
         prompt += "\nThe user's question is in Arabic. Write the message and suggested tests only in Arabic."
     return prompt
+
+
+_VOLTAGE_INCREASE_PATTERNS = (
+    re.compile(r"\b(?:increase|raise|boost|turn\s+up)\b.{0,70}\bvoltage\b", re.I),
+    re.compile(r"\bvoltage\b.{0,60}\b(?:increase|raise|boost|higher|up\s+to)\b", re.I),
+    re.compile(r"\b(?:input|supply)\s+voltage\b.{0,40}\b(?:to|at)\s+\d", re.I),
+    re.compile(r"(?:ولتاژ.{0,30}(?:افزایش|بالا ببرید|زیاد کنید|بیشتر کنید)|"
+               r"(?:افزایش|بالا بردن|زیاد کردن).{0,30}ولتاژ)"),
+    re.compile(r"(?:ورودی|منبع تغذیه).{0,30}(?:ولتاژ را )?(?:بالا ببرید|افزایش دهید|زیاد کنید)"),
+)
+_SAFETY_NEGATION = re.compile(
+    r"\b(?:do not|don't|never|must not|avoid|not)\b|نباید|نکنید|نکن\b|هرگز|بالا نبرید|افزایش ندهید", re.I
+)
+
+
+def _unsafe_voltage_advice(text: str) -> bool:
+    if _SAFETY_NEGATION.search(text):
+        return False
+    return any(pattern.search(text) for pattern in _VOLTAGE_INCREASE_PATTERNS)
+
+
+def apply_safety_policy(data: dict, user_prompt: str = "") -> dict:
+    """Drop advice to raise supply voltage and add an explicit safe alternative."""
+    message_parts = re.split(r"(?<=[.!?؟])\s+|\n+", data.get("message", ""))
+    safe_parts = [part for part in message_parts if part and not _unsafe_voltage_advice(part)]
+    tests = [test for test in data.get("suggested_tests", [])
+             if not _unsafe_voltage_advice(test)]
+    removed = len(safe_parts) != len([part for part in message_parts if part]) or len(tests) != len(data.get("suggested_tests", []))
+    result = dict(data)
+    result["message"] = " ".join(safe_parts).strip()
+    result["suggested_tests"] = tests
+    if removed:
+        if any(char in user_prompt for char in "پچژگکی"):
+            note = "ایمنی: ولتاژ ورودی را افزایش ندهید؛ فقط از ولتاژ نامی و محدودهٔ تأییدشدهٔ برد و قطعات استفاده کنید."
+        elif any("\u0600" <= char <= "\u06ff" for char in user_prompt):
+            note = "تنبيه للسلامة: لا ترفع جهد الدخل؛ التزم بالجهد الاسمي وحدود اللوحة والمكونات المعتمدة."
+        else:
+            note = "Safety: Do not raise the input voltage; use only the board's specified nominal voltage and verified ratings."
+        result["message"] = (result["message"] + "\n\n" + note).strip()
+    return result
 
 
 def format_ai_reply(data: dict, user_prompt: str = "") -> str:
@@ -254,7 +295,7 @@ def ask_ai_async(client: OllamaClient, user_prompt: str, board, store, callback:
             context = build_context(board, store)
             raw = client.generate(f"{context}\n\nUser Symptom/Question:\n{user_prompt}",
                                   _system_prompt_for(user_prompt))
-            result = {"data": parse_ai_response(raw)}
+            result = {"data": apply_safety_policy(parse_ai_response(raw), user_prompt)}
             if warning:
                 result["warning"] = warning
         except (OllamaError, ValueError) as exc:
