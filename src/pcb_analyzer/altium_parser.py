@@ -217,6 +217,8 @@ def _parse_ascii_pcbdoc(path: str) -> Board:
         end_y=_ascii_mm(item.get("Y2")),
         width=_ascii_mm(item.get("WIDTH")),
         layer=_ascii_layer(item.get("LAYER", "TOP")),
+        component_ref=(components_by_id.get(item.get("COMPONENT", "")).reference
+                       if item.get("COMPONENT", "") in components_by_id else None),
     ) for item in tracks)
     board.layers = sorted({item.layer for item in board.tracks} | {
         pad.layers[0] for component in board.components for pad in component.pads

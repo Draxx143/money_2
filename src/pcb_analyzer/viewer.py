@@ -20,8 +20,8 @@ LAYER_COLORS = {
     "MECHANICAL15": (0.76, 0.68, 0.08),
 }
 
-SELECT_COLOR = (0.00, 0.82, 0.70)   # accent primary
-HOVER_COLOR = (0.30, 0.64, 1.00)    # accent secondary
+SELECT_COLOR = (1.00, 0.18, 0.82)   # vivid magenta selection, distinct on copper blue
+HOVER_COLOR = (0.20, 0.92, 1.00)    # bright cyan hover
 
 
 class PcbViewer(Gtk.DrawingArea):
@@ -164,6 +164,22 @@ class PcbViewer(Gtk.DrawingArea):
             cr.move_to(px1, py1)
             cr.line_to(px2, py2)
             cr.stroke()
+
+        # Highlight the complete selected footprint, not just its pads: Altium
+        # ASCII tracks retain their owning component designator.
+        if self.selected_ref:
+            for track in self.board.tracks:
+                if track.component_ref != self.selected_ref:
+                    continue
+                px1, py1 = self.mm_to_px(track.start_x, track.start_y)
+                px2, py2 = self.mm_to_px(track.end_x, track.end_y)
+                base_width = max(track.width * self.scale, 1.0)
+                cr.set_source_rgba(*SELECT_COLOR, 0.28)
+                cr.set_line_width(base_width + 7.0)
+                cr.move_to(px1, py1); cr.line_to(px2, py2); cr.stroke()
+                cr.set_source_rgb(*SELECT_COLOR)
+                cr.set_line_width(max(base_width + 1.5, 3.0))
+                cr.move_to(px1, py1); cr.line_to(px2, py2); cr.stroke()
 
         # Components (pads + reference)
         for c in self.board.components:

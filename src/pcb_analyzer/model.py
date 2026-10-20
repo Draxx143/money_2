@@ -43,6 +43,7 @@ class Track:
     end_y: float
     width: float
     layer: str
+    component_ref: Optional[str] = None
 
 
 @dataclass

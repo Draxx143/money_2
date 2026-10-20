@@ -32,6 +32,7 @@ class TestAltiumAsciiParser(unittest.TestCase):
         self.assertIsNotNone(capacitor.value_x)
         self.assertEqual(len(capacitor.pads), 2)
         self.assertEqual(capacitor.pads[0].net, "GND")
+        self.assertTrue(any(t.component_ref == "C1" for t in board.tracks))
         self.assertAlmostEqual(capacitor.x, 53.0700, places=2)
 
 
