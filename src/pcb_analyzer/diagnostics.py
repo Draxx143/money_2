@@ -6,6 +6,7 @@ consistent with the expected value under the stated tolerance.
 """
 from typing import Optional, Tuple
 
+from .model import pad_board_position
 from .engineering import (
     expected_range,
     fmt_engineering,
@@ -48,16 +49,18 @@ def evaluate_testpoint(tp: TestPoint) -> Tuple[str, str]:
     ok = within_tolerance(measured, expected, tol)
     low, high = expected_range(expected, tol)
 
+    zero_note = (f" Zero expected value uses absolute tolerance {tol / 100.0:g} {unit}."
+                 if expected == 0 else "")
     if ok:
         return STATUS_PASS, (
             f"Measured {fmt_engineering(measured, unit)} is within "
             f"{fmt_engineering(low, unit)}–{fmt_engineering(high, unit)} "
-            f"(expected {fmt_engineering(expected, unit)} ±{tol:g}%)."
+            f"(expected {fmt_engineering(expected, unit)} ±{tol:g}%).{zero_note}"
         )
     return STATUS_FAIL, (
         f"Measured {fmt_engineering(measured, unit)} is outside "
         f"{fmt_engineering(low, unit)}–{fmt_engineering(high, unit)} "
-        f"(expected {fmt_engineering(expected, unit)} ±{tol:g}%)."
+        f"(expected {fmt_engineering(expected, unit)} ±{tol:g}%).{zero_note}"
     )
 
 
@@ -81,8 +84,7 @@ def suggest_testpoints_for_component(board, ref: str) -> list:
         tp.pad_number = pad.number
         tp.net = pad.net or ""
         tp.label = f"{comp.reference}.{pad.number}"
-        tp.x = comp.x + pad.x
-        tp.y = comp.y + pad.y
+        tp.x, tp.y = pad_board_position(comp, pad)
         tp.source = "suggested"
         suggestions.append(tp)
     return suggestions

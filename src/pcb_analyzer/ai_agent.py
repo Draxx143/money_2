@@ -1,17 +1,34 @@
 """Local AI agent integration (Ollama HTTP API) with structured output."""
 import json
+import re
+from urllib.parse import urlparse
 import threading
 import urllib.request
 import urllib.error
 from typing import Callable, Optional
 
 from .diagnostics import evaluate_testpoint
+from .knowledge_base import component_references
+
+
+class OllamaError(Exception):
+    """Transport or API response failure from Ollama."""
 
 
 class OllamaClient:
-    def __init__(self, host="http://127.0.0.1:11434", model="llama3"):
-        self.host = host.rstrip("/")
+    def __init__(self, host="http://127.0.0.1:11434", model="llama3", timeout=120, num_ctx=4096):
+        self.host = self._validate_host(host)
         self.model = model
+        self.timeout = timeout
+        self.num_ctx = num_ctx
+
+    @staticmethod
+    def _validate_host(host):
+        host = str(host).strip()
+        parsed = urlparse(host)
+        if parsed.scheme not in ("http", "https") or not parsed.netloc:
+            raise ValueError("Ollama host must be an http:// or https:// URL")
+        return host.rstrip("/")
 
     def list_models(self) -> list:
         """Returns list of locally available model names."""
@@ -24,52 +41,87 @@ class OllamaClient:
             return []
 
     def generate(self, prompt: str, system: str = "") -> str:
-        """Sends a synchronous request (must be run in a thread)."""
-        payload = {
-            "model": self.model,
-            "prompt": prompt,
-            "system": system,
-            "stream": False,
-            "options": {"temperature": 0.1} # low temp for engineering
-        }
-        data = json.dumps(payload).encode("utf-8")
+        """Send a synchronous request (normally called in a worker thread)."""
+        payload = {"model": self.model, "prompt": prompt, "system": system,
+                   "stream": False, "format": "json",
+                   "options": {"temperature": 0.1, "num_ctx": self.num_ctx}}
         req = urllib.request.Request(
-            f"{self.host}/api/generate",
-            data=data,
-            headers={"Content-Type": "application/json"}
-        )
+            f"{self.host}/api/generate", data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"})
         try:
-            with urllib.request.urlopen(req, timeout=120) as resp:
+            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
                 result = json.loads(resp.read().decode("utf-8"))
-                return result.get("response", "")
-        except urllib.error.URLError as e:
-            return f"ERROR: Cannot connect to Ollama. Is it running?\nDetails: {e}"
-        except Exception as e:
-            return f"ERROR: {e}"
+        except urllib.error.HTTPError as exc:
+            body = exc.read().decode("utf-8", errors="replace")
+            try:
+                message = json.loads(body).get("error", body)
+            except (ValueError, AttributeError):
+                message = body
+            raise OllamaError(f"Ollama HTTP {exc.code}: {message}") from exc
+        except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
+            raise OllamaError(f"Cannot get a valid response from Ollama: {exc}") from exc
+        if not isinstance(result, dict):
+            raise OllamaError("Ollama returned an invalid response")
+        if result.get("error"):
+            raise OllamaError(str(result["error"]))
+        if not isinstance(result.get("response"), str):
+            raise OllamaError("Ollama response has no text")
+        return result["response"]
 
 
-def build_context(board, store) -> str:
-    """Creates a text summary of the board and measurements for the AI."""
-    lines = []
+
+def build_context(board, store, max_chars: int = 12000) -> str:
+    """Create prioritized, bounded board/measurement context for the model."""
+    component_lines = []
+    points = list(store)
+    ranked = []
+    for tp in points:
+        status, reason = evaluate_testpoint(tp)
+        rank = {"Fail": 0, "Unknown": 1, "Pass": 2, "Not Tested": 3}.get(status, 3)
+        line = (f"[{tp.label}] Ref:{tp.reference} Pad:{tp.pad_number} "
+                f"Expected:{tp.expected_value}{tp.unit} Actual:{tp.actual_value}{tp.unit} "
+                f"Status:{status}")
+        if status in ("Fail", "Unknown"):
+            line += f" Reason:{reason}"
+        ranked.append((rank, line, tp.reference))
+    ranked.sort(key=lambda item: item[0])
     if board:
-        lines.append("--- BOARD COMPONENTS ---")
-        for c in board.components:
-            lines.append(f"{c.reference}: {c.value} ({c.footprint})")
-    else:
-        lines.append("No board loaded.")
+        priority_refs = []
+        for rank, _, ref in ranked:
+            if rank <= 1 and ref and ref not in priority_refs:
+                priority_refs.append(ref)
+        component_order = sorted(board.components,
+                                 key=lambda c: (0 if c.reference in priority_refs else 1,
+                                                priority_refs.index(c.reference) if c.reference in priority_refs else 0))
+        component_lines = [f"{c.reference}: {c.value} ({c.footprint})" for c in component_order]
 
-    lines.append("\n--- TEST POINTS & MEASUREMENTS ---")
-    if len(store) == 0:
+    lines = ["--- BOARD COMPONENTS ---"]
+    lines.extend(component_lines if board else ["No board loaded."])
+    lines.extend(("", "--- TEST POINTS & MEASUREMENTS ---"))
+    if not points:
         lines.append("No test points recorded.")
     else:
-        for tp in store:
-            status, _ = evaluate_testpoint(tp)
-            lines.append(
-                f"[{tp.label}] Ref:{tp.reference} Pad:{tp.pad_number} "
-                f"Expected:{tp.expected_value}{tp.unit} Actual:{tp.actual_value}{tp.unit} "
-                f"Status:{status}"
-            )
-    return "\n".join(lines)
+        lines.extend(entry[1] for entry in ranked)
+    full = "\n".join(lines)
+    if len(full) <= max_chars:
+        return full
+    # Under pressure, put diagnostic evidence before the component inventory.
+    critical = [entry[1] for entry in ranked if entry[0] <= 1]
+    routine = [entry[1] for entry in ranked if entry[0] > 1]
+    lines = (["--- TEST POINTS & MEASUREMENTS ---"] + critical +
+             ["--- BOARD COMPONENTS ---"] + component_lines + routine)
+    kept, used = [], 0
+    component_header_index = lines.index("--- BOARD COMPONENTS ---")
+    kept_component_count = 0
+    for idx, line in enumerate(lines):
+        if used + len(line) + 1 > max(0, max_chars - 40):
+            break
+        kept.append(line); used += len(line) + 1
+        if idx > component_header_index and idx < component_header_index + 1 + len(component_lines):
+            kept_component_count += 1
+    omitted = max(0, len(component_lines) - kept_component_count)
+    kept.append(f"... {omitted} more components omitted")
+    return "\n".join(kept)
 
 
 SYSTEM_PROMPT = """You are an expert electronics repair technician AI.
@@ -77,9 +129,11 @@ You are diagnosing a PCB based on the provided context.
 You must reply with valid JSON only, no markdown, no conversational text.
 
 CRITICAL INSTRUCTIONS:
-1. LANGUAGE: You MUST reply in the EXACT SAME LANGUAGE that the user used to ask their question. If they ask in English, reply in English. If they ask in Persian (Farsi), reply in Persian.
-2. JSON KEYS: The JSON keys MUST ALWAYS BE IN ENGLISH exactly as shown below.
-3. COMPONENT REFERENCES: Component references (like U1, R5) and units (V, A, ohm) MUST remain in English.
+1. SAFETY: Never recommend increasing, bypassing, or raising the input/supply voltage as a troubleshooting step. Never exceed the board, component, adapter, or datasheet voltage ratings. If ratings are unknown, tell the user to keep the specified nominal input (for example, 12 V) and verify it safely; do not guess a higher voltage. Recommend power-off checks before touching or rewiring a board.
+2. LANGUAGE: You MUST reply in the EXACT SAME LANGUAGE that the user used to ask their question. If they ask in English, reply in English. If they ask in Persian (Farsi), reply in Persian.
+3. JSON KEYS: The JSON keys MUST ALWAYS BE IN ENGLISH exactly as shown below.
+4. COMPONENT REFERENCES: Component references (like U1, R5), exact part numbers, and standard units may remain in English.
+5. ARCHIVE: Use retrieved prior cases only as unverified leads, never as confirmed engineering facts. Prefer verified board data, measurements, and manufacturer datasheets. State uncertainty when ratings or part identity are unknown.
 
 Schema:
 {
@@ -92,30 +146,184 @@ Keep the message concise, technical, and in the user's language.
 """
 
 
-def ask_ai_async(client: OllamaClient, user_prompt: str, board, store, callback: Callable):
-    """Runs the AI query in a background thread and calls callback(result_dict)."""
-    def worker():
-        context = build_context(board, store)
-        full_prompt = f"{context}\n\nUser Symptom/Question:\n{user_prompt}"
-        raw_response = client.generate(full_prompt, SYSTEM_PROMPT)
 
-        if raw_response.startswith("ERROR:"):
-            callback({"error": raw_response})
-            return
+def _system_prompt_for(user_prompt: str) -> str:
+    """Reinforce strict language matching, including an explicit Farsi directive."""
+    prompt = SYSTEM_PROMPT + "\n\nSTRICT LANGUAGE RULE: Every user-facing sentence must use the exact language of the user's question. Do not answer in English unless the user asked in English. Keep JSON keys and component references in English."
+    if any(char in user_prompt for char in "پچژگکی"):
+        prompt += ("\nThe user's question is in Persian (Farsi). Write the message and every suggested test only in Persian. "
+                   "پاسخ و همهٔ پیشنهادها را کاملاً به فارسی بنویسید. واژه‌های عمومی انگلیسی مثل socket و power را ترجمه کنید؛ "
+                   "فقط نام دقیق قطعه، شماره قطعه، شناسهٔ نت و سرواژه‌های استاندارد لازم را عیناً نگه دارید. "
+                   "از جملهٔ انگلیسی استفاده نکنید.")
+    elif any("\u0600" <= char <= "\u06ff" for char in user_prompt):
+        prompt += "\nThe user's question is in Arabic. Write the message and suggested tests only in Arabic."
+    return prompt
 
+
+_VOLTAGE_INCREASE_PATTERNS = (
+    re.compile(r"\b(?:increase|raise|boost|turn\s+up)\b.{0,70}\bvoltage\b", re.I),
+    re.compile(r"\bvoltage\b.{0,60}\b(?:increase|raise|boost|higher|up\s+to)\b", re.I),
+    re.compile(r"\b(?:input|supply)\s+voltage\b.{0,40}\b(?:to|at)\s+\d", re.I),
+    re.compile(r"(?:ولتاژ.{0,30}(?:افزایش|بالا ببرید|زیاد کنید|بیشتر کنید)|"
+               r"(?:افزایش|بالا بردن|زیاد کردن).{0,30}ولتاژ)"),
+    re.compile(r"(?:ورودی|منبع تغذیه).{0,30}(?:ولتاژ را )?(?:بالا ببرید|افزایش دهید|زیاد کنید)"),
+)
+_SAFETY_NEGATION = re.compile(
+    r"\b(?:do not|don't|never|must not|avoid|not)\b|نباید|نکنید|نکن\b|هرگز|بالا نبرید|افزایش ندهید", re.I
+)
+
+
+def _unsafe_voltage_advice(text: str) -> bool:
+    if _SAFETY_NEGATION.search(text):
+        return False
+    return any(pattern.search(text) for pattern in _VOLTAGE_INCREASE_PATTERNS)
+
+
+def apply_safety_policy(data: dict, user_prompt: str = "") -> dict:
+    """Drop advice to raise supply voltage and add an explicit safe alternative."""
+    message_parts = re.split(r"(?<=[.!?؟])\s+|\n+", data.get("message", ""))
+    safe_parts = [part for part in message_parts if part and not _unsafe_voltage_advice(part)]
+    tests = [test for test in data.get("suggested_tests", [])
+             if not _unsafe_voltage_advice(test)]
+    removed = len(safe_parts) != len([part for part in message_parts if part]) or len(tests) != len(data.get("suggested_tests", []))
+    result = dict(data)
+    result["message"] = " ".join(safe_parts).strip()
+    result["suggested_tests"] = tests
+    if removed:
+        if any(char in user_prompt for char in "پچژگکی"):
+            note = "ایمنی: ولتاژ ورودی را افزایش ندهید؛ فقط از ولتاژ نامی و محدودهٔ تأییدشدهٔ برد و قطعات استفاده کنید."
+        elif any("\u0600" <= char <= "\u06ff" for char in user_prompt):
+            note = "تنبيه للسلامة: لا ترفع جهد الدخل؛ التزم بالجهد الاسمي وحدود اللوحة والمكونات المعتمدة."
+        else:
+            note = "Safety: Do not raise the input voltage; use only the board's specified nominal voltage and verified ratings."
+        result["message"] = (result["message"] + "\n\n" + note).strip()
+    return result
+
+
+def format_ai_reply(data: dict, user_prompt: str = "") -> str:
+    """Format the answer without chatter and translate common prose for Persian users."""
+    message = data.get("message") or ""
+    tests = data.get("suggested_tests", [])
+    if tests:
+        message += "\n\n" + "\n".join(f"• {test}" for test in tests)
+    if any(char in user_prompt for char in "پچژگکی"):
+        translations = (
+            (r"\bpower supply\b", "منبع تغذیه"),
+            (r"\bsockets\b", "سوکت‌ها"),
+            (r"\bsocket\b", "سوکت"),
+            (r"\bvoltage\b", "ولتاژ"),
+            (r"\bpower\b", "برق"),
+            (r"\binput\b", "ورودی"),
+            (r"\boutput\b", "خروجی"),
+            (r"\bmeasure(?:ment)?\b", "اندازه‌گیری"),
+            (r"\bcheck\b", "بررسی"),
+            (r"\bthe\b", ""),
+            (r"\bare\b", "هستند"),
+            (r"\bis\b", "است"),
+            (r"\bat\b", "در"),
+            (r"\bto\b", "به"),
+            (r"\band\b", "و"),
+            (r"\bfrom\b", "از"),
+        )
+        for pattern, translation in translations:
+            message = re.sub(pattern, translation, message, flags=re.IGNORECASE)
+        message = re.sub(r"\s+", " ", message)
+        message = re.sub(r"\s+([،؛.!؟:])", r"\1", message)
+    return message
+
+def parse_ai_response(raw: str) -> dict:
+    """Normalize model JSON, allowing fences and surrounding explanatory text."""
+    text = raw.strip() if isinstance(raw, str) else str(raw)
+    candidates = []
+    fenced = re.search(r"```(?:json)?\s*(.*?)```", text, re.IGNORECASE | re.DOTALL)
+    if fenced:
+        candidates.append(fenced.group(1).strip())
+    candidates.append(text)
+    # Extract the first balanced object without being confused by braces in strings.
+    start = text.find("{")
+    if start >= 0:
+        depth, quoted, escaped = 0, False, False
+        for pos in range(start, len(text)):
+            char = text[pos]
+            if quoted:
+                if escaped: escaped = False
+                elif char == "\\": escaped = True
+                elif char == '"': quoted = False
+            elif char == '"': quoted = True
+            elif char == "{": depth += 1
+            elif char == "}":
+                depth -= 1
+                if depth == 0:
+                    candidates.append(text[start:pos + 1])
+                    break
+    data = None
+    for candidate in candidates:
         try:
-            # Extract JSON even if the model wrapped it in markdown blocks
-            clean_json = raw_response
-            if "```json" in clean_json:
-                clean_json = clean_json.split("```json")[1].split("```")[0]
-            elif "```" in clean_json:
-                clean_json = clean_json.split("```")[1].split("```")[0]
+            data = json.loads(candidate)
+            break
+        except (json.JSONDecodeError, TypeError):
+            continue
+    if not isinstance(data, dict):
+        raise ValueError("AI returned invalid JSON: " + text[:2000])
 
-            data = json.loads(clean_json.strip())
-            callback({"data": data})
-        except json.JSONDecodeError:
-            # Fallback: model failed to produce JSON
-            callback({"error": f"AI returned invalid JSON:\n\n{raw_response}"})
+    def as_list(value):
+        values = value if isinstance(value, list) else ([] if value is None else [value])
+        result = []
+        for item in values:
+            if isinstance(item, (dict, list)):
+                item = json.dumps(item, ensure_ascii=False, sort_keys=True)
+            item = str(item).strip()
+            if item:
+                result.append(item)
+        return result
 
-    thread = threading.Thread(target=worker, daemon=True)
-    thread.start()
+    message = data.get("message", "")
+    if not isinstance(message, str):
+        message = str(message)
+    return {"message": message, "suspect_components": as_list(data.get("suspect_components")),
+            "suggested_tests": as_list(data.get("suggested_tests"))}
+
+
+def ask_ai_async(client: OllamaClient, user_prompt: str, board, store, callback: Callable,
+                 knowledge_base=None):
+    """Run AI query, retrieve related archived cases, and archive the new encounter."""
+    def worker():
+        try:
+            warning = None
+            models = client.list_models()
+            if models and client.model not in models:
+                previous = client.model
+                client.model = models[0]
+                warning = f"Model {previous} was unavailable; using {client.model}."
+            context = build_context(board, store)
+            if knowledge_base is not None:
+                references = component_references(board, user_prompt)
+                context += "\n\n" + knowledge_base.format_relevant_cases(
+                    user_prompt, references=references)
+            raw = client.generate(f"{context}\n\nUser Symptom/Question:\n{user_prompt}",
+                                  _system_prompt_for(user_prompt))
+            data = apply_safety_policy(parse_ai_response(raw), user_prompt)
+            if knowledge_base is not None:
+                references = component_references(
+                    board, user_prompt, data.get("message", ""),
+                    suspects=data.get("suspect_components", []))
+                names = []
+                if board:
+                    selected = {ref.casefold() for ref in references}
+                    names = [f"{c.reference}={c.value}" for c in board.components
+                             if c.reference.casefold() in selected]
+                # Archive every completed interaction. Model-derived diagnoses remain unverified.
+                knowledge_base.archive_case(
+                    user_prompt, data.get("message", ""), references=references,
+                    component_names="; ".join(names),
+                    suggested_tests=data.get("suggested_tests", []), status="unverified")
+            result = {"data": data}
+            if warning:
+                result["warning"] = warning
+        except (OllamaError, ValueError) as exc:
+            result = {"error": str(exc)}
+        except Exception as exc:  # last-resort boundary for worker thread
+            result = {"error": f"AI request failed: {exc}"}
+        callback(result)
+
+    threading.Thread(target=worker, daemon=True).start()

@@ -3,6 +3,7 @@
 
 Milestone 5: test-point management.
 """
+import logging
 import os
 import sys
 
@@ -18,6 +19,7 @@ gi.require_version("Gtk", "3.0")
 gi.require_version("Gdk", "3.0")
 from gi.repository import Gdk, Gio, Gtk
 
+from pcb_analyzer import __version__
 from pcb_analyzer.diagnostics import (
     evaluate_testpoint, suggest_testpoints_for_component, summarize_results,
 )
@@ -30,13 +32,19 @@ from pcb_analyzer.testpoints import (
     TestPoint, TestPointStore,
 )
 from pcb_analyzer.viewer import PcbViewer
-from pcb_analyzer.ai_agent import OllamaClient, ask_ai_async
+from pcb_analyzer.ai_agent import OllamaClient, ask_ai_async, format_ai_reply
+from pcb_analyzer.knowledge_base import KnowledgeBase
+from pcb_analyzer.settings import load_settings, save_settings
+from pcb_analyzer.report import export_csv
+from pcb_analyzer.ui_layout import clamp_workspace_divider
 from pcb_analyzer.altium_parser import AltiumParserError, parse_pcbdoc
 from pcb_analyzer.easyeda_parser import parse_easyeda_json
 
+logger = logging.getLogger(__name__)
+
 APP_NAME = "PCB Analyzer"
 APP_SUBTITLE = "Analysis & Diagnostics Workbench"
-APP_VERSION = "0.6.25"
+APP_VERSION = __version__
 
 BG_MAIN = "#0B0F14"
 BG_PANEL = "#121923"
@@ -290,8 +298,11 @@ class TestPointDialog(Gtk.Dialog):
 
 class MainWindow(Gtk.ApplicationWindow):
     def __init__(self, app):
-        super().__init__(application=app, title=f"{APP_NAME} — {APP_SUBTITLE}")
-        self.set_default_size(1600, 950)
+        self.user_settings = load_settings()
+        display_name = self.user_settings["application_name"]
+        subtitle = self.user_settings["subtitle"]
+        super().__init__(application=app, title=f"{display_name} — {subtitle}" if subtitle else display_name)
+        self.set_default_size(1280, 800)
         self.set_name("main-window")
         self.board: Board = None
         self.board_path: str = None
@@ -305,16 +316,20 @@ class MainWindow(Gtk.ApplicationWindow):
         paned = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL)
         paned.set_position(300)
         vbox.pack_start(paned, True, True, 0)
-        paned.pack1(self.build_component_explorer(), resize=False, shrink=False)
+        paned.pack1(self.build_component_explorer(), resize=False, shrink=True)
 
         inner = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
-        paned.pack2(inner, resize=True, shrink=False)
+        paned.pack2(inner, resize=True, shrink=True)
 
         hpaned = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL)
-        hpaned.set_position(1000)
+        self.workspace_paned = hpaned
+        hpaned.set_position(880)
+        hpaned.connect("size-allocate", self._constrain_workspace_paned)
+        hpaned.connect("notify::position", self._constrain_workspace_paned)
         inner.pack_start(hpaned, True, True, 0)
 
         self.viewer = PcbViewer()
+        self.viewer.set_size_request(280, 180)
         self.viewer.connect("component-selected", self.on_viewer_selected)
         viewer_shell = Gtk.Overlay()
         viewer_shell.add(self.viewer)
@@ -324,11 +339,17 @@ class MainWindow(Gtk.ApplicationWindow):
         tool_palette.set_margin_start(12)
         tool_palette.set_margin_top(12)
         viewer_shell.add_overlay(tool_palette)
-        hpaned.pack1(viewer_shell, resize=True, shrink=False)
-        hpaned.pack2(self.build_right_panels(), resize=False, shrink=False)
+        hpaned.pack1(viewer_shell, resize=True, shrink=True)
+        hpaned.pack2(self.build_right_panels(), resize=False, shrink=True)
 
         inner.pack_start(self.build_bottom_notebook(), True, True, 0)
         vbox.pack_start(self.build_statusbar(), False, False, 0)
+
+    def _constrain_workspace_paned(self, paned, _event=None):
+        width = paned.get_allocation().width
+        position = clamp_workspace_divider(width, paned.get_position())
+        if position != paned.get_position():
+            paned.set_position(position)
 
     # ---- Menus / toolbar ----
     def build_viewer_tools(self):
@@ -487,6 +508,7 @@ class MainWindow(Gtk.ApplicationWindow):
         fm.append(Gtk.SeparatorMenuItem())
         self.add_menu_item(fm, "Load Test Points…", self.on_load_testpoints)
         self.add_menu_item(fm, "Save Test Points…", self.on_save_testpoints)
+        self.add_menu_item(fm, "Export CSV…", self.on_export_csv)
         fm.append(Gtk.SeparatorMenuItem())
         self.add_menu_item(fm, "Quit", self.on_quit)
         menubar.append(file_m)
@@ -547,7 +569,7 @@ class MainWindow(Gtk.ApplicationWindow):
     # ---- Explorer ----
     def build_component_explorer(self):
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
-        box.set_size_request(280, -1)
+        box.set_size_request(220, -1)
         box.pack_start(panel_title("Component Explorer"), False, False, 0)
 
         bar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
@@ -565,11 +587,11 @@ class MainWindow(Gtk.ApplicationWindow):
         bar.pack_start(self.layer_combo, False, False, 0)
         box.pack_start(bar, False, False, 0)
 
-        self.component_store = Gtk.ListStore(str, str, str)
+        self.component_store = Gtk.ListStore(str, str, str, str)
         self.component_filter = self.component_store.filter_new()
         self.component_filter.set_visible_func(self._component_visible)
         self.component_view = Gtk.TreeView(model=self.component_filter)
-        for i, name in enumerate(("Ref", "Value", "Footprint")):
+        for i, name in enumerate(("Ref", "Value", "Footprint", "Status")):
             r = Gtk.CellRendererText()
             col = Gtk.TreeViewColumn(name, r, text=i)
             col.set_resizable(True)
@@ -581,14 +603,35 @@ class MainWindow(Gtk.ApplicationWindow):
         scroll = Gtk.ScrolledWindow()
         scroll.add(self.component_view)
         box.pack_start(scroll, True, True, 0)
-        return box
+
+        sidebar = Gtk.Notebook()
+        sidebar.append_page(box, Gtk.Label(label="Components"))
+        nets_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        nets_box.set_size_request(220, -1)
+        nets_box.pack_start(panel_title("Parsed Nets"), False, False, 0)
+        self.nets_store = Gtk.ListStore(str, str)
+        self.nets_view = Gtk.TreeView(model=self.nets_store)
+        for index, title in enumerate(("Net", "Geometry")):
+            renderer = Gtk.CellRendererText()
+            column = Gtk.TreeViewColumn(title, renderer, text=index)
+            column.set_resizable(True)
+            self.nets_view.append_column(column)
+        self.nets_view.get_selection().connect("changed", self.on_net_selected)
+        net_scroll = Gtk.ScrolledWindow()
+        net_scroll.add(self.nets_view)
+        nets_box.pack_start(net_scroll, True, True, 0)
+        clear_net = Gtk.Button(label="Clear net highlight")
+        clear_net.connect("clicked", self.on_clear_net)
+        nets_box.pack_start(clear_net, False, False, 4)
+        sidebar.append_page(nets_box, Gtk.Label(label="Nets"))
+        return sidebar
 
     def _component_visible(self, model, tree_iter, _data):
         text = self.search_entry.get_text().strip().lower()
         if text:
             if text not in " ".join(str(v) for v in model[tree_iter]).lower():
                 return False
-        active = self.layer_combo.get_active_id() or "All layers"
+        active = self.layer_combo.get_active_text() or "All layers"
         if active in ("F.Cu", "B.Cu") and self.board:
             ref = model[tree_iter][0]
             comp = self.board.find_component(ref)
@@ -599,10 +642,10 @@ class MainWindow(Gtk.ApplicationWindow):
     # ---- Right panels ----
     def build_right_panels(self):
         vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
-        vbox.set_size_request(380, -1)
+        vbox.set_size_request(250, -1)
 
         ai_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
-        ai_box.set_size_request(-1, 350) # Fixed height for chat area
+        ai_box.set_size_request(-1, 190)
 
         # Header with model status
         ai_header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
@@ -614,6 +657,9 @@ class MainWindow(Gtk.ApplicationWindow):
 
         # Chat history (TextView)
         self.chat_buffer = Gtk.TextBuffer()
+        self._chat_tags = {}
+        self._ai_request_in_flight = False
+        self._autosave_source_id = None
         self.chat_view = Gtk.TextView(buffer=self.chat_buffer)
         self.chat_view.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
         self.chat_view.set_editable(False)
@@ -629,19 +675,35 @@ class MainWindow(Gtk.ApplicationWindow):
         # Input area
         input_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
         input_box.set_margin_top(6); input_box.set_margin_start(6); input_box.set_margin_end(6); input_box.set_margin_bottom(6)
-        self.ai_entry = Gtk.Entry()
-        self.ai_entry.set_placeholder_text("Describe the symptom (e.g. No power on U1)…")
-        self.ai_entry.connect("activate", self.on_ai_send)
-        input_box.pack_start(self.ai_entry, True, True, 0)
+        composer_scroll = Gtk.ScrolledWindow()
+        composer_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        composer_scroll.set_size_request(-1, 76)
+        self.ai_entry = Gtk.TextView()
+        self.ai_entry.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
+        self.ai_entry.set_accepts_tab(False)
+        self.ai_entry.set_left_margin(8)
+        self.ai_entry.set_right_margin(8)
+        self.ai_entry.set_top_margin(6)
+        self.ai_entry.set_bottom_margin(6)
+        self._composer_placeholder = "Describe the symptom (e.g. No power on U1)…"
+        self.ai_entry.get_buffer().set_text(self._composer_placeholder)
+        self.ai_entry.connect("focus-in-event", self._clear_composer_placeholder)
+        self.ai_entry.connect("key-press-event", self._on_composer_key)
+        composer_scroll.add(self.ai_entry)
+        input_box.pack_start(composer_scroll, True, True, 0)
         self.btn_ai_send = Gtk.Button(label="Send")
         self.btn_ai_send.connect("clicked", self.on_ai_send)
         input_box.pack_start(self.btn_ai_send, False, False, 0)
         ai_box.pack_start(input_box, False, False, 0)
 
-        vbox.pack_start(ai_box, False, False, 0)
+        vbox.pack_start(ai_box, True, True, 0)
 
         # State
-        self.ollama_client = OllamaClient()
+        self.ollama_client = OllamaClient(
+            host=self.user_settings["ollama_host"], model=self.user_settings["ollama_model"])
+        self.ai_knowledge_base = KnowledgeBase()
+        for message in self.ai_knowledge_base.load_chat_messages():
+            self.append_chat(message["sender"], message["content"], persist=False)
 
         insp_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         insp_box.pack_start(panel_title("Component Inspector"), False, False, 0)
@@ -687,7 +749,7 @@ class MainWindow(Gtk.ApplicationWindow):
     # ---- Bottom notebook ----
     def build_bottom_notebook(self):
         nb = Gtk.Notebook()
-        nb.set_size_request(-1, 260)
+        nb.set_size_request(-1, 180)
 
         logs_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         self.log_label = Gtk.Label(label="No entries yet.")
@@ -701,10 +763,58 @@ class MainWindow(Gtk.ApplicationWindow):
         nb.append_page(self.pdf_viewer, Gtk.Label(label="Schematic (PDF)"))
 
         nb.append_page(self.build_testpoints_tab(), Gtk.Label(label="Test Points"))
+        nb.append_page(self.build_findings_tab(), Gtk.Label(label="Findings"))
 
         nb.show_all()
         self.bottom_notebook = nb
         return nb
+
+    def build_findings_tab(self):
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        legend = Gtk.Label(
+            label="Selected: magenta   Suspected: amber   Confirmed: red   Passed: green   Failed: rose",
+            xalign=0)
+        legend.set_margin_start(8)
+        legend.set_margin_top(6)
+        legend.get_style_context().add_class("dim")
+        box.pack_start(legend, False, False, 0)
+
+        self.findings_store = Gtk.ListStore(str, str, str)
+        self.findings_view = Gtk.TreeView(model=self.findings_store)
+        for index, title in enumerate(("Component", "State", "Evidence / note")):
+            renderer = Gtk.CellRendererText()
+            column = Gtk.TreeViewColumn(title, renderer, text=index)
+            column.set_resizable(True)
+            self.findings_view.append_column(column)
+        self.findings_view.get_selection().connect("changed", self.on_finding_selected)
+        scroll = Gtk.ScrolledWindow()
+        scroll.add(self.findings_view)
+        box.pack_start(scroll, True, True, 0)
+
+        clear = Gtk.Button(label="Clear diagnostic highlights")
+        clear.set_tooltip_text("Remove AI suspicion overlays; does not erase conversation history")
+        clear.connect("clicked", self.on_clear_findings)
+        box.pack_start(clear, False, False, 4)
+        return box
+
+    def on_finding_selected(self, selection):
+        model, tree_iter = selection.get_selected()
+        if tree_iter is None or not self.board:
+            return
+        component = self.board.resolve_component_reference(model[tree_iter][0])
+        if component is None:
+            return
+        self.viewer.select_component(component.reference)
+        self.viewer.pan_to(component.x, component.y)
+        self.on_viewer_selected(self.viewer, component.reference)
+
+    def on_clear_findings(self, _button):
+        if hasattr(self, "findings_store"):
+            self.findings_store.clear()
+        if hasattr(self, "component_store"):
+            for row in self.component_store:
+                row[3] = ""
+        self.viewer.clear_diagnostic_components()
 
     def build_testpoints_tab(self):
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
@@ -830,7 +940,7 @@ class MainWindow(Gtk.ApplicationWindow):
             return
         try:
             self.store.load(path)
-        except Exception as exc:  # noqa: BLE001
+        except (OSError, ValueError, TypeError) as exc:
             self.show_error(f"Failed to load test points:\n{exc}")
             return
         self.refresh_testpoints_view()
@@ -843,10 +953,24 @@ class MainWindow(Gtk.ApplicationWindow):
             return
         try:
             self.store.save(path)
-        except Exception as exc:  # noqa: BLE001
+        except (OSError, TypeError, ValueError) as exc:
             self.show_error(f"Failed to save test points:\n{exc}")
             return
         self.log_label.set_text(f"Saved {len(self.store)} test point(s) to {os.path.basename(path)}")
+
+    def on_export_csv(self, _w):
+        path = self._choose_save("Export Test Points as CSV", "*.csv",
+                                 default_name="testpoints.csv")
+        if not path:
+            return
+        if not path.lower().endswith(".csv"):
+            path += ".csv"
+        try:
+            export_csv(self.store, path)
+        except OSError as exc:
+            self.show_error(f"Failed to export CSV:\n{exc}")
+            return
+        self.log_label.set_text(f"Exported {len(self.store)} test point(s) to {os.path.basename(path)}")
 
     def _choose_file(self, title, pattern):
         d = Gtk.FileChooserDialog(title=title, parent=self, action=Gtk.FileChooserAction.OPEN, use_header_bar=True)
@@ -889,12 +1013,15 @@ class MainWindow(Gtk.ApplicationWindow):
         except AltiumParserError as exc:
             self.show_error(f"Altium import failed:\n{exc}")
             return
-        except Exception as exc:
+        except Exception as exc:  # Parser boundary: malformed third-party file data.
+            logger.warning("Board parsing failed for %s", path, exc_info=True)
             self.show_error(f"Failed to parse board:\n{exc}")
             return
         self.board = board
         self.board_path = path
         self.viewer.set_board(board)
+        if hasattr(self, "findings_store"):
+            self.findings_store.clear()
         # This supplied Altium ASCII design is a bottom-side board; mirror the
         # complete board view by default so it agrees with the CAD bottom view.
         default_bottom = board.version == "altium-ascii"
@@ -907,16 +1034,23 @@ class MainWindow(Gtk.ApplicationWindow):
             f"Loaded {len(board.components)} components, {len(board.tracks)} tracks"
         )
         self.clear_inspector()
-        if self.store.load_if_exists(path):
+        try:
+            if self.store.load_if_exists(path):
+                suffix = f" — {len(self.store)} test point(s) loaded"
+                if self.store.skipped:
+                    suffix += f"; skipped {self.store.skipped} invalid entry/entries"
+                self.log_label.set_text(self.log_label.get_text() + suffix)
+        except ValueError as exc:
             self.log_label.set_text(self.log_label.get_text() +
-                                    f" — {len(self.store)} test point(s) loaded")
+                                    f" — saved test points ignored: {exc}")
         self.refresh_testpoints_view()
 
 
     def load_pdf(self, path):
         try:
             self.pdf_viewer.load(path)
-        except Exception as exc:  # noqa: BLE001
+        except (OSError, ValueError, RuntimeError) as exc:
+            logger.warning("PDF load failed for %s: %s", path, exc)
             self.show_error(f"Failed to open PDF:\n{exc}")
             return
         self.bottom_notebook.set_current_page(1)
@@ -927,8 +1061,35 @@ class MainWindow(Gtk.ApplicationWindow):
         if not self.board:
             return
         for c in self.board.components:
-            self.component_store.append([c.reference, c.value, c.footprint])
+            self.component_store.append([c.reference, c.value, c.footprint, ""])
         self.component_filter.refilter()
+        self.refresh_nets_list()
+
+    def refresh_nets_list(self):
+        if not hasattr(self, "nets_store"):
+            return
+        self.nets_store.clear()
+        counts = self.board.net_inventory() if self.board else {}
+        for net in sorted(counts, key=str.casefold):
+            count = counts[net]
+            summary = f"{count['pads']} pads · {count['tracks']} tracks · {count['vias']} vias"
+            self.nets_store.append([net, summary])
+        self.viewer.select_net(None)
+
+    def on_net_selected(self, selection):
+        model, tree_iter = selection.get_selected()
+        if tree_iter is None:
+            return
+        net = model[tree_iter][0]
+        if self.viewer.select_net(net):
+            self.status_task.set_text(f"Net: {net}")
+        else:
+            self.status_task.set_text("Net has no parsed geometry")
+
+    def on_clear_net(self, _button):
+        self.viewer.select_net(None)
+        self.nets_view.get_selection().unselect_all()
+        self.status_task.set_text("Idle")
 
     def on_search_changed(self, _e): self.component_filter.refilter()
     def on_filter_changed(self, _c): self.component_filter.refilter()
@@ -960,6 +1121,12 @@ class MainWindow(Gtk.ApplicationWindow):
             self.clear_inspector()
             return
         model = self.component_view.get_model()
+        if not any(row[0] == ref for row in model):
+            # Reveal real selected components even when a sidebar search/layer filter hid them.
+            self.search_entry.set_text("")
+            self.layer_combo.set_active(0)
+            self.component_filter.refilter()
+            model = self.component_view.get_model()
         for row in model:
             if row[0] == ref:
                 self.component_view.get_selection().select_iter(row.iter)
@@ -1020,12 +1187,29 @@ class MainWindow(Gtk.ApplicationWindow):
         if tp and tp.x is not None:
             self.viewer.set_marker(tp.x, tp.y)
 
+    def queue_testpoint_autosave(self):
+        if not self.board_path:
+            return
+        from gi.repository import GLib
+        if self._autosave_source_id:
+            GLib.source_remove(self._autosave_source_id)
+        self._autosave_source_id = GLib.timeout_add(1000, self._autosave_testpoints)
+
+    def _autosave_testpoints(self):
+        self._autosave_source_id = None
+        if not self.store.autosave():
+            self.log_label.set_text("Warning: could not autosave test points")
+        else:
+            self.log_label.set_text("Test points autosaved")
+        return False
+
     def on_add_testpoint(self, _w):
         dlg = TestPointDialog(self, self.board)
         if dlg.run() == Gtk.ResponseType.OK:
             tp = dlg.build_tp()
             self.store.add(tp)
             self.refresh_testpoints_view()
+            self.queue_testpoint_autosave()
         dlg.destroy()
 
     def on_edit_testpoint(self, _w):
@@ -1038,6 +1222,7 @@ class MainWindow(Gtk.ApplicationWindow):
             tp = dlg.build_tp()
             self.store.update(tp)
             self.refresh_testpoints_view()
+            self.queue_testpoint_autosave()
         dlg.destroy()
 
     def on_delete_testpoint(self, _w):
@@ -1046,6 +1231,7 @@ class MainWindow(Gtk.ApplicationWindow):
             return
         if self.store.delete(sel.id):
             self.refresh_testpoints_view()
+            self.queue_testpoint_autosave()
 
     def on_goto_testpoint(self, _w):
         sel = self._selected_tp()
@@ -1071,6 +1257,7 @@ class MainWindow(Gtk.ApplicationWindow):
             tp = dlg.build_tp()
             self.store.add(tp)
             self.refresh_testpoints_view()
+            self.queue_testpoint_autosave()
         dlg.destroy()
 
     # ---- Auto-evaluate / Suggest ----
@@ -1082,6 +1269,7 @@ class MainWindow(Gtk.ApplicationWindow):
             status, _reason = evaluate_testpoint(tp)
             tp.status = status
         self.refresh_testpoints_view()
+        self.queue_testpoint_autosave()
         counts = summarize_results(self.store.all())
         summary = (
             f"Evaluated {len(self.store)} test point(s): "
@@ -1107,6 +1295,7 @@ class MainWindow(Gtk.ApplicationWindow):
         for tp in suggestions:
             self.store.add(tp)
         self.refresh_testpoints_view()
+        self.queue_testpoint_autosave()
         self.log_label.set_text(
             f"Added {len(suggestions)} suggested test point(s) for {ref}. "
             f"Fill in the expected values."
@@ -1129,76 +1318,154 @@ class MainWindow(Gtk.ApplicationWindow):
 
         dlg.show_all()
         if dlg.run() == Gtk.ResponseType.OK:
-            self.ollama_client.host = host_entry.get_text().strip()
-            self.ollama_client.model = model_entry.get_text().strip()
-            self.append_chat("System", f"AI configured to use {self.ollama_client.model} at {self.ollama_client.host}.", "#4DA3FF")
+            try:
+                self.ollama_client.host = self.ollama_client._validate_host(host_entry.get_text())
+            except ValueError as exc:
+                dlg.destroy()
+                self.show_error(str(exc))
+                return
+            self.ollama_client.model = model_entry.get_text().strip() or self.ollama_client.model
+            self.user_settings["ollama_host"] = self.ollama_client.host
+            self.user_settings["ollama_model"] = self.ollama_client.model
+            try:
+                save_settings(self.user_settings)
+            except OSError as exc:
+                logger.exception("Could not save AI settings")
+                self.show_error(f"Settings could not be saved: {exc}")
         dlg.destroy()
 
-    def append_chat(self, sender, text, color="#F1F5F9"):
-        end_iter = self.chat_buffer.get_end_iter()
-        tag = self.chat_buffer.create_tag(None, foreground=color, weight=700 if sender != "AI" else 400)
-        self.chat_buffer.insert_with_tags(end_iter, f"[{sender}]\n", tag)
+    def _composer_text(self):
+        buffer = self.ai_entry.get_buffer()
+        return buffer.get_text(buffer.get_start_iter(), buffer.get_end_iter(), True)
 
+    def _clear_composer_placeholder(self, _widget, _event):
+        if self._composer_text() == self._composer_placeholder:
+            self.ai_entry.get_buffer().set_text("")
+        return False
+
+    def _on_composer_key(self, _widget, event):
+        if event.keyval in (Gdk.KEY_Return, Gdk.KEY_KP_Enter):
+            if event.state & Gdk.ModifierType.SHIFT_MASK:
+                return False
+            self.on_ai_send(self.btn_ai_send)
+            return True
+        return False
+
+    def append_chat(self, sender, text, color="#F1F5F9", persist=True):
+        if persist and sender in ("You", "AI") and hasattr(self, "ai_knowledge_base"):
+            try:
+                self.ai_knowledge_base.save_chat_message(sender, text, self.board_path or "")
+            except Exception:
+                logger.exception("Could not save conversation history")
+        weight = 700 if sender != "AI" else 400
+        key = (color, weight)
+        if key not in self._chat_tags:
+            self._chat_tags[key] = self.chat_buffer.create_tag(
+                None, foreground=color, weight=weight)
+        if "body" not in self._chat_tags:
+            self._chat_tags["body"] = self.chat_buffer.create_tag(
+                None, foreground="#F1F5F9")
         end_iter = self.chat_buffer.get_end_iter()
-        tag_body = self.chat_buffer.create_tag(None, foreground="#F1F5F9")
-        self.chat_buffer.insert_with_tags(end_iter, f"{text}\n\n", tag_body)
+        self.chat_buffer.insert_with_tags(end_iter, f"[{sender}]\n", self._chat_tags[key])
+        end_iter = self.chat_buffer.get_end_iter()
+        self.chat_buffer.insert_with_tags(end_iter, f"{text}\n\n", self._chat_tags["body"])
 
         # Scroll to bottom
         self.chat_view.scroll_to_iter(self.chat_buffer.get_end_iter(), 0.0, False, 0, 0)
 
     def on_ai_send(self, _w):
-        text = self.ai_entry.get_text().strip()
-        if not text:
+        if self._ai_request_in_flight:
             return
-        self.ai_entry.set_text("")
+        text = self._composer_text().strip()
+        if not text or text == self._composer_placeholder:
+            return
+        self.ai_entry.get_buffer().set_text("")
+        self._last_ai_user_prompt = text
+        request_board = self.board
+        request_board_path = self.board_path
         self.append_chat("You", text, "#00D1B2")
 
+        self._ai_request_in_flight = True
         self.btn_ai_send.set_sensitive(False)
         self.btn_ai_send.set_label("Thinking…")
-        self.append_chat("System", "Analyzing board and measurements…", "#94A3B8")
 
         def on_result(res):
-            # This callback is invoked from the background thread; use GLib.idle_add to safely update UI
+            # Keep board identity with the result so a late response cannot cross-probe
+            # a different board that the user opened while inference was running.
+            res["request_board"] = request_board
+            res["request_board_path"] = request_board_path
             from gi.repository import GLib
             GLib.idle_add(self._handle_ai_response, res)
 
-        ask_ai_async(self.ollama_client, text, self.board, self.store, on_result)
+        try:
+            ask_ai_async(self.ollama_client, text, self.board, self.store, on_result,
+                         knowledge_base=self.ai_knowledge_base)
+        except Exception as exc:  # Last-resort worker startup boundary.
+            logger.exception("Could not start AI worker")
+            from gi.repository import GLib
+            GLib.idle_add(self._handle_ai_response, {"error": str(exc)})
 
     def _handle_ai_response(self, res):
+        self._ai_request_in_flight = False
         self.btn_ai_send.set_sensitive(True)
         self.btn_ai_send.set_label("Send")
 
         if "error" in res:
-            self.append_chat("Error", res["error"], "#9b2226")
+            self.append_chat("AI", res["error"], "#9b2226")
+            # Keep failed input available for editing and retrying.
+            if not self._composer_text().strip():
+                self.ai_entry.get_buffer().set_text(getattr(self, "_last_ai_user_prompt", ""))
             return
 
         data = res["data"]
-        msg = data.get("message", "No message.")
+        user_prompt = getattr(self, "_last_ai_user_prompt", "")
+        full_reply = format_ai_reply(data, user_prompt) or "No message."
         suspects = data.get("suspect_components", [])
-        tests = data.get("suggested_tests", [])
+        valid_refs, unresolved_refs = [], []
+        seen = set()
+        request_board = res.get("request_board", self.board)
+        board_matches_request = request_board is self.board
+        if self.board and board_matches_request:
+            for ref in suspects:
+                component = self.board.resolve_component_reference(ref)
+                if component is None:
+                    if ref not in unresolved_refs:
+                        unresolved_refs.append(ref)
+                    continue
+                key = component.reference.casefold()
+                if key not in seen:
+                    seen.add(key)
+                    valid_refs.append(component.reference)
 
-        full_reply = msg
-        if tests:
-            full_reply += "\n\nSuggested Tests:\n- " + "\n- ".join(tests)
+        if unresolved_refs:
+            if any(char in user_prompt for char in "پچژگکی"):
+                note = "\n\nشناسه‌های قطعهٔ پیدا‌نشده در برد (برجسته نشده‌اند): "
+            else:
+                note = "\n\nUnresolved component references (not highlighted): "
+            full_reply += note + ", ".join(unresolved_refs)
+        elif not board_matches_request and suspects:
+            if any(char in user_prompt for char in "پچژگکی"):
+                full_reply += "\n\nبرد هنگام پاسخ‌گویی عوض شد؛ این شناسه‌ها روی برد فعلی برجسته نشدند."
+            else:
+                full_reply += "\n\nThe board changed during analysis; findings were not applied to the current board."
 
         self.append_chat("AI", full_reply, "#F1F5F9")
 
-        # Auto-highlight suspect components
-        if suspects and self.board:
-            valid_refs = []
-            for ref in suspects:
-                if self.board.find_component(ref):
-                    valid_refs.append(ref)
-                else:
-                    self.append_chat("System", f"AI mentioned unknown component: {ref}", "#a07600")
-
+        if board_matches_request:
+            if hasattr(self, "findings_store"):
+                self.findings_store.clear()
+                for ref in valid_refs:
+                    self.findings_store.append([ref, "AI suspected", "AI hypothesis — unverified"])
+            diagnostic_states = {ref: "suspected" for ref in valid_refs}
+            self.viewer.set_diagnostic_components(diagnostic_states)
+            for row in self.component_store:
+                row[3] = "AI suspected" if row[0] in diagnostic_states else ""
             if valid_refs:
-                # If multiple, just highlight the first one for now, or we can add multi-highlight support later.
-                # For now, let's select the first one.
                 first_ref = valid_refs[0]
+                component = self.board.resolve_component_reference(first_ref)
                 self.viewer.select_component(first_ref)
+                self.viewer.pan_to(component.x, component.y)
                 self.on_viewer_selected(self.viewer, first_ref)
-                self.append_chat("System", f"Highlighted {first_ref} on the board.", "#4DA3FF")
 
         return False # Remove from idle queue
 
@@ -1220,8 +1487,8 @@ class MainWindow(Gtk.ApplicationWindow):
                         Gtk.STOCK_OK, Gtk.ResponseType.OK)
         grid = Gtk.Grid(row_spacing=6, column_spacing=12, margin=12)
         dlg.get_content_area().add(grid)
-        name_entry = Gtk.Entry(text=APP_NAME)
-        sub_entry = Gtk.Entry(text=APP_SUBTITLE)
+        name_entry = Gtk.Entry(text=self.user_settings["application_name"])
+        sub_entry = Gtk.Entry(text=self.user_settings["subtitle"])
         grid.attach(Gtk.Label(label="Application name:", xalign=0), 0, 0, 1, 1)
         grid.attach(name_entry, 1, 0, 1, 1)
         grid.attach(Gtk.Label(label="Subtitle:", xalign=0), 0, 1, 1, 1)
@@ -1230,12 +1497,20 @@ class MainWindow(Gtk.ApplicationWindow):
         if dlg.run() == Gtk.ResponseType.OK:
             name = name_entry.get_text().strip() or APP_NAME
             sub = sub_entry.get_text().strip()
+            self.user_settings["application_name"] = name
+            self.user_settings["subtitle"] = sub
+            try:
+                save_settings(self.user_settings)
+            except OSError as exc:
+                logger.exception("Could not save application settings")
+                self.show_error(f"Settings could not be saved: {exc}")
             self.set_title(f"{name} — {sub}" if sub else name)
         dlg.destroy()
 
     def on_about(self, _w):
         d = Gtk.AboutDialog(transient_for=self, modal=True)
-        d.set_program_name(APP_NAME); d.set_version(APP_VERSION); d.set_comments(APP_SUBTITLE)
+        d.set_program_name(self.user_settings["application_name"])
+        d.set_version(APP_VERSION); d.set_comments(self.user_settings["subtitle"])
         d.run(); d.destroy()
 
     def show_error(self, message):

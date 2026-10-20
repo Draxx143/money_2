@@ -39,26 +39,44 @@ def parse_value(text: str) -> Optional[float]:
     text = str(text).strip()
     if not text:
         return None
+    # Electronics notation: a single embedded designator replaces the decimal
+    # point (4k7, 0R47, 3V3, 1u5). A suffix unit is intentionally not accepted
+    # after this shorthand to avoid treating words such as "min" as prefixes.
+    shorthand = re.fullmatch(r"([+-]?\d*)([RrKkMmGgVvUuNnPp])([0-9]+)", text)
+    if shorthand:
+        left, marker, right = shorthand.groups()
+        prefix = {"R": "", "V": "", "K": "k", "M": "M", "G": "G",
+                  "U": "u", "N": "n", "P": "p"}[marker.upper()]
+        numeric = float((left or "0") + "." + right)
+        result = numeric * SI_PREFIXES.get(prefix, SI_PREFIXES.get("u", 1e-6))
+        return result if math.isfinite(result) else None
     m = _VALUE_RE.match(text)
     if not m:
         return None
     number = float(m.group(1))
     prefix = m.group(2) or ""
+    suffix = m.group(3).lower()
+    # Avoid misreading common non-SI words as milli-prefixed values.
+    if prefix == "m" and suffix in ("in", "il", "inutes"):
+        # Treat mil/min as unit words; the parser carries no dimensional unit.
+        return number
     factor = SI_PREFIXES.get(prefix)
     if factor is None:
         return None
-    return number * factor
+    result = number * factor
+    return result if math.isfinite(result) else None
 
 
 def parse_tolerance(text: str) -> Optional[float]:
     """Parse a tolerance like '5%', '±5%', '2' (percent) -> float percent."""
     if text is None:
         return None
-    s = str(text).strip().replace("±", "").replace("%", "")
+    s = str(text).strip().replace("±", "").replace("+-", "").replace("%", "").strip()
     if not s:
         return None
     try:
-        return float(s)
+        value = float(s)
+        return value if math.isfinite(value) and value >= 0 else None
     except ValueError:
         return None
 
@@ -101,12 +119,16 @@ def voltage_divider(vin_v: float, r1_ohm: float, r2_ohm: float) -> float:
     return vin_v * r2_ohm / denom
 
 
-def within_tolerance(measured: float, expected: float, tol_pct: float) -> bool:
-    """Return True if measured is within expected ± tol_pct/100."""
+def within_tolerance(measured: float, expected: float, tol_pct: float,
+                     abs_tol: Optional[float] = None) -> bool:
+    """Return True within percentage tolerance; zero uses legacy tol_pct/100 by default."""
     if tol_pct < 0:
         raise ValueError("tolerance must be >= 0")
     if expected == 0:
-        return abs(measured) <= tol_pct / 100.0
+        allowed = tol_pct / 100.0 if abs_tol is None else abs_tol
+        if allowed < 0 or not math.isfinite(allowed):
+            raise ValueError("absolute tolerance must be finite and >= 0")
+        return abs(measured) <= allowed
     allowed = abs(expected) * (tol_pct / 100.0)
     return abs(measured - expected) <= allowed
 

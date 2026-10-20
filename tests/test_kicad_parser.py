@@ -14,6 +14,11 @@ class TestParser(unittest.TestCase):
         path = os.path.join(HERE, "fixtures", "sample_board.kicad_pcb")
         self.board = parse_pcb(path)
 
+    def test_rejects_trailing_data_after_top_level_expression(self):
+        from pcb_analyzer.kicad_parser import SexpError, parse_sexpr
+        with self.assertRaisesRegex(SexpError, "after top-level"):
+            parse_sexpr('(kicad_pcb (version 20240108)) trailing')
+
     def test_components_parsed(self):
         refs = [c.reference for c in self.board.components]
         self.assertIn("R1", refs)
@@ -36,6 +41,35 @@ class TestParser(unittest.TestCase):
 
     def test_outline(self):
         self.assertGreaterEqual(len(self.board.outline.segments), 4)
+
+    def test_legacy_module_net_via_drill_and_edge_circle(self):
+        text = '''(kicad_pcb
+          (net 1 "GND")
+          (module "Legacy:Part" (layer "B.Cu") (at 10 20 90)
+            (fp_text reference "Q1") (fp_text value "FET")
+            (fp_line (start 0 0) (end 1 0) (layer "Edge.Cuts"))
+            (pad "1" thru_hole circle (at 1 2 45) (size 2 2) (drill 0.8)
+              (layers "*.Cu") (net 1 "GND")))
+          (segment (start 0 0) (end 1 1) (width 0.2) (layer "B.Cu") (net 1))
+          (via (at 4 5) (size 0.8) (drill 0.4) (layers "F.Cu" "B.Cu") (net 1))
+          (gr_circle (center 0 0) (end 2 0) (layer "Edge.Cuts"))
+          (zone (net 1) (layer "B.Cu") (filled_polygon (pts (xy 0 0) (xy 1 0) (xy 1 1)))) )'''
+        board = parse_pcb_text(text)
+        self.assertEqual(board.components[0].reference, "Q1")
+        self.assertEqual(board.components[0].pads[0].hole_diameter, 0.8)
+        self.assertEqual(board.components[0].pads[0].rotation, 45)
+        self.assertEqual(board.components[0].pads[0].net, "GND")
+        self.assertEqual(len(board.zones), 1)
+        self.assertEqual(board.tracks[0].net, "GND")
+        self.assertEqual(board.vias[0].net, "GND")
+        self.assertGreater(len(board.outline.segments), 60)
+        self.assertIn((10.0, 20.0, 10.0, 19.0), board.outline.segments)
+
+    def test_malformed_edge_primitive_does_not_abort_other_geometry(self):
+        board = parse_pcb_text('(kicad_pcb (gr_line (start bad 0) (end 1 1) (layer "Edge.Cuts")) '
+                               '(segment (start 0 0) (end 2 2) (width 0.2) (layer "F.Cu")))')
+        self.assertEqual(len(board.tracks), 1)
+        self.assertEqual(board.outline.segments, [])
 
     def test_bounds(self):
         b = self.board.bounds()

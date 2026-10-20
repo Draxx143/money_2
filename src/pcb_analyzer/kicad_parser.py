@@ -1,8 +1,9 @@
 """Parser for KiCad .kicad_pcb files (S-expression format, KiCad 6/7/8)."""
 import re
+import math
 from typing import List, Union
 
-from .model import Board, Component, Pad, Track
+from .model import Board, BoardZone, Component, Pad, Track, Via
 
 
 class SexpError(ValueError):
@@ -36,6 +37,8 @@ def parse_sexpr(text: str) -> list:
         return tok
 
     result = parse()
+    if pos != len(tokens):
+        raise SexpError("unexpected tokens after top-level expression")
     return result
 
 
@@ -67,7 +70,7 @@ def _floats(node: list, start: int, count: int) -> List[float]:
 
 
 def parse_pcb(path: str) -> Board:
-    with open(path, "r", encoding="utf-8") as f:
+    with open(path, "r", encoding="utf-8", errors="replace") as f:
         text = f.read()
     return parse_pcb_text(text)
 
@@ -90,11 +93,20 @@ def parse_pcb_text(text: str) -> Board:
             if isinstance(entry, list) and len(entry) >= 2:
                 board.layers.append(entry[1])
 
-    # Footprints (components)
-    for fp in _children(root, "footprint"):
-        comp = _parse_footprint(fp)
-        if comp:
-            board.components.append(comp)
+    net_names = {}
+    for net in _children(root, "net"):
+        if len(net) > 2:
+            net_names[str(net[1])] = str(net[2])
+
+    # Footprints (modern and legacy KiCad 5 nodes).
+    for fp in _children(root, "footprint") + _children(root, "module"):
+        try:
+            comp = _parse_footprint(fp, net_names)
+            if comp:
+                board.components.append(comp)
+                board.outline.segments.extend(_footprint_edge_segments(fp, comp))
+        except (ValueError, TypeError, IndexError):
+            continue
 
     # Segments (tracks)
     for seg in _children(root, "segment"):
@@ -108,8 +120,23 @@ def parse_pcb_text(text: str) -> Board:
             sx, sy = _floats(start, 1, 2)
             ex, ey = _floats(end, 1, 2)
             w = float(width[1])
-            board.tracks.append(Track(sx, sy, ex, ey, w, str(layer[1])))
+            net_node = _child(seg, "net")
+            net = net_names.get(str(net_node[1]), str(net_node[1])) if net_node and len(net_node) > 1 else None
+            board.tracks.append(Track(sx, sy, ex, ey, w, str(layer[1]), net=net))
         except (SexpError, ValueError, IndexError):
+            continue
+
+    for via in _children(root, "via"):
+        try:
+            at, size, drill, layers, net_node = (_child(via, key) for key in
+                                                  ("at", "size", "drill", "layers", "net"))
+            if not (at and size and drill):
+                continue
+            x, y = _floats(at, 1, 2)
+            net = net_names.get(str(net_node[1]), str(net_node[1])) if net_node and len(net_node) > 1 else None
+            board.vias.append(Via(x, y, float(size[1]), float(drill[1]),
+                                  [str(v) for v in layers[1:]] if layers else [], net))
+        except (ValueError, TypeError, IndexError, SexpError):
             continue
 
     # Board outline from Edge.Cuts gr_line / gr_rect
@@ -120,9 +147,47 @@ def parse_pcb_text(text: str) -> Board:
         start = _child(gr, "start")
         end = _child(gr, "end")
         if start and end:
-            x1, y1 = _floats(start, 1, 2)
-            x2, y2 = _floats(end, 1, 2)
-            board.outline.segments.append((x1, y1, x2, y2))
+            try:
+                x1, y1 = _floats(start, 1, 2)
+                x2, y2 = _floats(end, 1, 2)
+                board.outline.segments.append((x1, y1, x2, y2))
+            except (ValueError, IndexError, SexpError):
+                continue
+
+    for gr in _children(root, "gr_circle"):
+        layer = _child(gr, "layer")
+        center, end = _child(gr, "center"), _child(gr, "end")
+        if not layer or len(layer) < 2 or layer[1] != "Edge.Cuts" or not (center and end):
+            continue
+        try:
+            cx, cy = _floats(center, 1, 2); ex, ey = _floats(end, 1, 2)
+            radius = math.hypot(ex - cx, ey - cy)
+            points = [(cx + radius * math.cos(i * math.pi / 36),
+                       cy + radius * math.sin(i * math.pi / 36)) for i in range(73)]
+            board.outline.segments.extend((a[0], a[1], b[0], b[1]) for a, b in zip(points, points[1:]))
+        except (ValueError, IndexError, SexpError):
+            continue
+
+    for gr in _children(root, "gr_poly"):
+        layer, pts = _child(gr, "layer"), _child(gr, "pts")
+        if not layer or len(layer) < 2 or layer[1] != "Edge.Cuts" or not pts:
+            continue
+        try:
+            points = [_floats(xy, 1, 2) for xy in _children(pts, "xy")]
+            board.outline.segments.extend((a[0],a[1],b[0],b[1]) for a,b in zip(points, points[1:] + points[:1]))
+        except (ValueError, IndexError, SexpError):
+            continue
+
+    for gr in _children(root, "gr_arc") + _children(root, "gr_curve"):
+        layer = _child(gr, "layer")
+        if not layer or len(layer) < 2 or layer[1] != "Edge.Cuts":
+            continue
+        try:
+            pts = [_child(gr, key) for key in ("start", "mid", "end")]
+            pts = [_floats(point, 1, 2) for point in pts if point]
+            board.outline.segments.extend((a[0],a[1],b[0],b[1]) for a,b in zip(pts, pts[1:]))
+        except (ValueError, IndexError, SexpError):
+            continue
 
     for gr in _children(root, "gr_rect"):
         layer = _child(gr, "layer")
@@ -131,19 +196,86 @@ def parse_pcb_text(text: str) -> Board:
         start = _child(gr, "start")
         end = _child(gr, "end")
         if start and end:
-            x1, y1 = _floats(start, 1, 2)
-            x2, y2 = _floats(end, 1, 2)
-            board.outline.segments.extend([
-                (x1, y1, x2, y1),
-                (x2, y1, x2, y2),
-                (x2, y2, x1, y2),
-                (x1, y2, x1, y1),
-            ])
+            try:
+                x1, y1 = _floats(start, 1, 2)
+                x2, y2 = _floats(end, 1, 2)
+                board.outline.segments.extend([
+                    (x1, y1, x2, y1), (x2, y1, x2, y2),
+                    (x2, y2, x1, y2), (x1, y2, x1, y1),
+                ])
+            except (ValueError, IndexError, SexpError):
+                continue
+
+    for zone in _children(root, "zone"):
+        filled = _children(zone, "filled_polygon")
+        for polygon in filled:
+            pts = _child(polygon, "pts")
+            if not pts:
+                continue
+            try:
+                points = [_floats(xy, 1, 2) for xy in _children(pts, "xy")]
+                if len(points) < 3:
+                    continue
+                layer = _child(zone, "layer")
+                net_node = _child(zone, "net")
+                net = net_names.get(str(net_node[1]), str(net_node[1])) if net_node and len(net_node) > 1 else None
+                board.zones.append(BoardZone(points=points,
+                                             layer=str(layer[1]) if layer and len(layer)>1 else "B.Cu",
+                                             net=net))
+            except (ValueError, TypeError, IndexError, SexpError):
+                continue
 
     return board
 
 
-def _parse_footprint(fp: list):
+def _footprint_edge_segments(fp: list, comp: Component):
+    """Transform footprint-local Edge.Cuts primitives to board segments."""
+    def transform(point):
+        x, y = point
+        if comp.layer.startswith("B."):
+            x = -x
+        angle = math.radians(comp.rotation)
+        return (comp.x + x * math.cos(angle) - y * math.sin(angle),
+                comp.y + x * math.sin(angle) + y * math.cos(angle))
+
+    segments = []
+    for kind in ("fp_line", "fp_arc", "fp_rect", "fp_circle"):
+        for primitive in _children(fp, kind):
+            layer = _child(primitive, "layer")
+            if not layer or len(layer) < 2 or layer[1] != "Edge.Cuts":
+                continue
+            try:
+                if kind == "fp_rect":
+                    start, end = _child(primitive, "start"), _child(primitive, "end")
+                    if not start or not end:
+                        continue
+                    x1, y1 = _floats(start, 1, 2); x2, y2 = _floats(end, 1, 2)
+                    points = [(x1,y1),(x2,y1),(x2,y2),(x1,y2),(x1,y1)]
+                elif kind == "fp_circle":
+                    center, end = _child(primitive, "center"), _child(primitive, "end")
+                    if not center or not end:
+                        continue
+                    cx, cy = _floats(center, 1, 2); ex, ey = _floats(end, 1, 2)
+                    radius = math.hypot(ex-cx, ey-cy)
+                    points = [(cx + radius*math.cos(i*math.pi/36),
+                               cy + radius*math.sin(i*math.pi/36)) for i in range(73)]
+                else:
+                    start, end = _child(primitive, "start"), _child(primitive, "end")
+                    if not start or not end:
+                        continue
+                    points = [_floats(start, 1, 2), _floats(end, 1, 2)]
+                    middle = _child(primitive, "mid")
+                    if middle:
+                        points.insert(1, _floats(middle, 1, 2))
+                board_points = [transform(point) for point in points]
+                segments.extend((a[0],a[1],b[0],b[1])
+                                for a,b in zip(board_points, board_points[1:]))
+            except (ValueError, TypeError, IndexError, SexpError):
+                continue
+    return segments
+
+
+def _parse_footprint(fp: list, net_names=None):
     at = _child(fp, "at")
     if not at:
         return None
@@ -188,14 +320,15 @@ def _parse_footprint(fp: list):
     )
 
     for pad in _children(fp, "pad"):
-        parsed = _parse_pad(pad)
+        parsed = _parse_pad(pad, net_names or {})
         if parsed:
             comp.pads.append(parsed)
 
     return comp
 
 
-def _parse_pad(pad: list):
+def _parse_pad(pad: list, net_names=None):
+    net_names = net_names or {}
     try:
         number = str(pad[1])
         shape = str(pad[2])
@@ -207,6 +340,7 @@ def _parse_pad(pad: list):
         return None
     try:
         px, py = _floats(at, 1, 2)
+        rotation = float(at[3]) if len(at) > 3 else 0.0
         w, h = _floats(size, 1, 2)
     except (SexpError, ValueError, IndexError):
         return None
@@ -215,7 +349,14 @@ def _parse_pad(pad: list):
     layers = [str(x) for x in layers_node[1:]] if layers_node else []
 
     net_node = _child(pad, "net")
-    net = str(net_node[1]) if net_node and len(net_node) > 1 else None
+    net = (net_names.get(str(net_node[1]),
+                         str(net_node[2]) if len(net_node) > 2 else str(net_node[1]))
+           if net_node and len(net_node) > 1 else None)
+    drill_node = _child(pad, "drill")
+    try:
+        drill = float(drill_node[1]) if drill_node and len(drill_node) > 1 else 0.0
+    except (ValueError, TypeError):
+        drill = 0.0
 
     return Pad(number=number, x=px, y=py, width=w, height=h,
-               shape=shape, layers=layers, net=net)
+               shape=shape, layers=layers, net=net, hole_diameter=drill, rotation=rotation)

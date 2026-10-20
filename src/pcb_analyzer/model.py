@@ -3,6 +3,7 @@
 All coordinates are in millimetres, matching KiCad's internal units.
 """
 from dataclasses import dataclass, field
+import math
 from typing import List, Optional
 
 
@@ -17,6 +18,7 @@ class Pad:
     layers: List[str] = field(default_factory=list)
     net: Optional[str] = None
     hole_diameter: float = 0.0
+    rotation: float = 0.0
 
 
 @dataclass
@@ -35,6 +37,21 @@ class Component:
     value_y: Optional[float] = None
 
 
+def pad_board_position(comp: Component, pad: Pad) -> tuple:
+    """Return physical pad coordinates in board mm.
+
+    Pad offsets are local footprint coordinates. Apply component rotation in
+    screen coordinates (positive angle rotates toward +Y), reflect local X for
+    bottom-side footprints, then translate by the component origin. The viewer
+    uses this same helper before its independent whole-board bottom-view flip.
+    """
+    x = -pad.x if str(comp.layer).startswith("B.") else pad.x
+    y = pad.y
+    angle = math.radians(comp.rotation or 0.0)
+    return (comp.x + x * math.cos(angle) - y * math.sin(angle),
+            comp.y + x * math.sin(angle) + y * math.cos(angle))
+
+
 @dataclass
 class Track:
     start_x: float
@@ -44,6 +61,17 @@ class Track:
     width: float
     layer: str
     component_ref: Optional[str] = None
+    net: Optional[str] = None
+
+
+@dataclass
+class Via:
+    x: float
+    y: float
+    size: float
+    drill: float
+    layers: List[str] = field(default_factory=list)
+    net: Optional[str] = None
 
 
 @dataclass
@@ -68,6 +96,7 @@ class Board:
     outline: BoardOutline = field(default_factory=BoardOutline)
     zones: List[BoardZone] = field(default_factory=list)
     layers: List[str] = field(default_factory=list)
+    vias: List[Via] = field(default_factory=list)
 
     def bounds(self):
         """Return (min_x, min_y, max_x, max_y) covering all geometry, or None."""
@@ -86,7 +115,35 @@ class Board:
         return (min(xs), min(ys), max(xs), max(ys))
 
     def find_component(self, reference: str) -> Optional[Component]:
+        """Return a component for an exact case-sensitive designator."""
         for c in self.components:
             if c.reference == reference:
                 return c
         return None
+
+    def resolve_component_reference(self, reference: str) -> Optional[Component]:
+        """Resolve case-insensitively, but never by fuzzy or prefix matching."""
+        needle = str(reference or "").strip().casefold()
+        if not needle:
+            return None
+        return next((component for component in self.components
+                     if component.reference.casefold() == needle), None)
+
+    def net_inventory(self) -> dict:
+        """Count only explicitly parsed pads, tracks and vias for each named net."""
+        inventory = {}
+
+        def add(net, kind):
+            if not net:
+                return
+            record = inventory.setdefault(str(net), {"pads": 0, "tracks": 0, "vias": 0})
+            record[kind] += 1
+
+        for component in self.components:
+            for pad in component.pads:
+                add(pad.net, "pads")
+        for track in self.tracks:
+            add(track.net, "tracks")
+        for via in self.vias:
+            add(via.net, "vias")
+        return inventory

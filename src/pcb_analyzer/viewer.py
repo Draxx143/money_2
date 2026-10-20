@@ -7,7 +7,8 @@ gi.require_version("Gtk", "3.0")
 gi.require_version("Gdk", "3.0")
 from gi.repository import Gdk, GObject, Gtk
 
-from .model import Board, Component
+from .model import Board, pad_board_position, Component
+from .ui_layout import component_label_font_sizes
 
 
 # Layer colours (KiCad-like, dark theme friendly)
@@ -21,7 +22,14 @@ LAYER_COLORS = {
 }
 
 SELECT_COLOR = (1.00, 0.18, 0.82)   # vivid magenta selection, distinct on copper blue
+NET_HIGHLIGHT_COLOR = (1.00, 0.82, 0.20)  # amber, distinct from layer colors
 HOVER_COLOR = (0.20, 0.92, 1.00)    # bright cyan hover
+DIAGNOSTIC_COLORS = {
+    "suspected": (1.00, 0.66, 0.12),
+    "confirmed": (1.00, 0.24, 0.20),
+    "passed": (0.20, 0.78, 0.42),
+    "failed": (1.00, 0.12, 0.28),
+}
 
 
 class PcbViewer(Gtk.DrawingArea):
@@ -41,8 +49,10 @@ class PcbViewer(Gtk.DrawingArea):
         self.visible_layers = set()
         self.side_layer_visibility = {}
         self.active_layer = None
+        self.selected_net = None
         self.selected_ref = None
         self.hover_ref = None
+        self.diagnostic_components = {}
         self.marker = None          # (x_mm, y_mm) or None
         self._dragging = False
         self._drag_last = (0.0, 0.0)
@@ -161,12 +171,14 @@ class PcbViewer(Gtk.DrawingArea):
         self.active_layer = "F.Cu" if "F.Cu" in self.layer_names else (
             self.layer_names[0] if self.layer_names else None
         )
+        self.selected_net = None
         self.measure_points.clear()
         self.measurements.clear()
         self.measure_cursor = None
         self._build_snap_points()
         self.selected_ref = None
         self.hover_ref = None
+        self.diagnostic_components = {}
         self.fit_to_view()
         self.queue_draw()
 
@@ -191,6 +203,31 @@ class PcbViewer(Gtk.DrawingArea):
 
     def select_component(self, reference):
         self.selected_ref = reference
+        self.queue_draw()
+
+    def select_net(self, net_name):
+        """Highlight a net only if the board contains parsed geometry for it."""
+        candidate = str(net_name or "")
+        known = bool(self.board) and any(
+            item.net == candidate
+            for item in (list(self.board.tracks) + list(self.board.vias) +
+                         [pad for component in self.board.components for pad in component.pads])
+        )
+        self.selected_net = candidate if known else None
+        self.queue_draw()
+        return known
+
+    def set_diagnostic_components(self, states):
+        """Set validated reference -> status overlays; unknown states are ignored."""
+        allowed = {"suspected", "confirmed", "passed", "failed"}
+        self.diagnostic_components = {
+            str(reference): state for reference, state in (states or {}).items()
+            if state in allowed and self.board and self.board.find_component(str(reference))
+        }
+        self.queue_draw()
+
+    def clear_diagnostic_components(self):
+        self.diagnostic_components.clear()
         self.queue_draw()
 
     def set_hover(self, reference):
@@ -328,6 +365,15 @@ class PcbViewer(Gtk.DrawingArea):
                 cr.line_to(*self._layer_to_px(*point, zone.layer))
             cr.close_path()
             cr.fill()
+            if self.selected_net and zone.net == self.selected_net:
+                cr.set_source_rgba(*NET_HIGHLIGHT_COLOR, 0.95)
+                cr.set_line_width(2.5)
+                x, y = self._layer_to_px(*zone.points[0], zone.layer)
+                cr.move_to(x, y)
+                for point in zone.points[1:]:
+                    cr.line_to(*self._layer_to_px(*point, zone.layer))
+                cr.close_path()
+                cr.stroke()
 
         # Outline is an independently toggleable Edge.Cuts layer.
         if self._layer_is_visible("Edge.Cuts"):
@@ -357,6 +403,33 @@ class PcbViewer(Gtk.DrawingArea):
             cr.line_to(px2, py2)
             cr.stroke()
 
+        # The selected net overlay is drawn above copper but below pads.
+        if self.selected_net:
+            cr.set_source_rgba(*NET_HIGHLIGHT_COLOR, 0.92)
+            for track in self.board.tracks:
+                if track.net != self.selected_net or not self._layer_is_visible(track.layer):
+                    continue
+                x1, y1 = self._layer_to_px(track.start_x, track.start_y, track.layer)
+                x2, y2 = self._layer_to_px(track.end_x, track.end_y, track.layer)
+                cr.set_line_width(max(track.width * self.scale + 2.5, 3.0))
+                cr.move_to(x1, y1); cr.line_to(x2, y2); cr.stroke()
+
+        # Vias render as actual parsed annuli; no via geometry is synthesized.
+        for via in getattr(self.board, "vias", []):
+            visible = not via.layers or any(self._layer_is_visible(layer) for layer in via.layers)
+            if not visible:
+                continue
+            vx, vy = self.mm_to_px(via.x, via.y)
+            radius = max(via.size * self.scale / 2.0, 2.0)
+            via_color = (NET_HIGHLIGHT_COLOR if self.selected_net and via.net == self.selected_net
+                         else (0.78, 0.82, 0.88))
+            cr.set_source_rgb(*via_color)
+            cr.arc(vx, vy, radius, 0, 2 * math.pi)
+            cr.fill()
+            cr.set_source_rgb(0.08, 0.10, 0.13)
+            cr.arc(vx, vy, max(via.drill * self.scale / 2.0, 0.7), 0, 2 * math.pi)
+            cr.fill()
+
         # Highlight the complete selected footprint, not just its pads: Altium
         # ASCII tracks retain their owning component designator.
         if self.selected_ref:
@@ -380,19 +453,24 @@ class PcbViewer(Gtk.DrawingArea):
                 continue
             is_sel = c.reference == self.selected_ref
             is_hover = c.reference == self.hover_ref
+            diagnostic_state = self.diagnostic_components.get(c.reference)
+            diagnostic_color = DIAGNOSTIC_COLORS.get(diagnostic_state)
 
             for pad in c.pads:
                 pad_layers = pad.layers or [c.layer]
                 if not any(self._layer_is_visible(layer) for layer in pad_layers):
                     continue
                 pad_layer = next(iter(pad.layers), c.layer)
-                px, py = self._layer_to_px(c.x + pad.x, c.y + pad.y, pad_layer)
+                pad_x, pad_y = pad_board_position(c, pad)
+                px, py = self._layer_to_px(pad_x, pad_y, pad_layer)
                 w = pad.width * self.scale
                 h = pad.height * self.scale
                 if is_sel:
                     cr.set_source_rgb(*SELECT_COLOR)
                 elif is_hover:
                     cr.set_source_rgb(*HOVER_COLOR)
+                elif diagnostic_color:
+                    cr.set_source_rgb(*diagnostic_color)
                 elif getattr(pad, "hole_diameter", 0.0) > 0:
                     # Neutral metal annulus for plated through-hole pads.
                     cr.set_source_rgb(0.72, 0.74, 0.79)
@@ -403,10 +481,25 @@ class PcbViewer(Gtk.DrawingArea):
                 else:
                     cr.rectangle(px - w / 2, py - h / 2, w, h)
                 cr.fill()
+                if self.selected_net and pad.net == self.selected_net:
+                    cr.set_source_rgb(*NET_HIGHLIGHT_COLOR)
+                    cr.set_line_width(max(1.5, min(3.5, self.scale * 0.18)))
+                    if pad.shape.lower() in ("circle", "round"):
+                        cr.arc(px, py, max(w, h) / 2 + 2.0, 0, 2 * math.pi)
+                    else:
+                        cr.rectangle(px - w / 2 - 2, py - h / 2 - 2, w + 4, h + 4)
+                    cr.stroke()
                 if getattr(pad, "hole_diameter", 0.0) > 0:
                     cr.set_source_rgb(0.0, 0.0, 0.0)
                     cr.arc(px, py, pad.hole_diameter * self.scale / 2, 0, 2 * math.pi)
                     cr.fill()
+
+            if diagnostic_color and not is_sel and not is_hover and component_visible:
+                cx, cy = self._layer_to_px(c.x, c.y, c.layer)
+                cr.set_source_rgba(*diagnostic_color, 0.9)
+                cr.set_line_width(2.2)
+                cr.arc(cx, cy, 9.0, 0, 2 * math.pi)
+                cr.stroke()
 
             if not component_visible:
                 continue
@@ -419,11 +512,14 @@ class PcbViewer(Gtk.DrawingArea):
             silk_layer = "B.SilkS" if self._canonical_layer(c.layer) == "B.Cu" else "F.SilkS"
             px, py = self._layer_to_px(ref_x, ref_y, silk_layer)
             cr.select_font_face("Sans", 0, 0)
-            cr.set_font_size(11)
+            reference_size, value_size = component_label_font_sizes(self.scale)
+            cr.set_font_size(reference_size)
             if is_sel:
                 cr.set_source_rgb(*SELECT_COLOR)
             elif is_hover:
                 cr.set_source_rgb(*HOVER_COLOR)
+            elif diagnostic_color:
+                cr.set_source_rgb(*diagnostic_color)
             else:
                 cr.set_source_rgb(*LAYER_COLORS[silk_layer])
             cr.move_to(px + 2, py - 2)
@@ -433,7 +529,7 @@ class PcbViewer(Gtk.DrawingArea):
                 value_x = c.value_x if c.value_x is not None else c.x
                 value_y = c.value_y if c.value_y is not None else c.y + 1.5
                 vx, vy = self._layer_to_px(value_x, value_y, silk_layer)
-                cr.set_font_size(9)
+                cr.set_font_size(value_size)
                 cr.move_to(vx + 2, vy - 2)
                 cr.show_text(c.value)
 

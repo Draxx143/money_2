@@ -1,5 +1,6 @@
 """Test-point records and persistent JSON storage."""
 import json
+import math
 import os
 import uuid
 from dataclasses import asdict, dataclass, field
@@ -51,16 +52,35 @@ class TestPoint:
     def to_dict(self):
         return asdict(self)
 
+    __test__ = False  # unittest/pytest should not collect this data class.
+
     @classmethod
     def from_dict(cls, d):
-        known = {f: d.get(f) for f in (
-            "id", "label", "reference", "pad_number", "net", "x", "y",
-            "category", "expected_value", "actual_value", "unit", "tolerance",
-            "status", "instrument", "notes", "source", "timestamp",
-        )}
-        if not known["id"]:
-            known["id"] = str(uuid.uuid4())
-        return cls(**known)
+        """Build a point from legacy or partially malformed JSON."""
+        if not isinstance(d, dict):
+            raise ValueError("test point entry must be an object")
+        defaults = cls()
+        fields = ("id", "label", "reference", "pad_number", "net", "expected_value",
+                  "actual_value", "unit", "tolerance", "instrument", "notes", "source",
+                  "timestamp")
+        values = {}
+        for name in fields:
+            value = d.get(name)
+            if value is None:
+                value = getattr(defaults, name)
+            values[name] = value if isinstance(value, str) else str(value)
+        for name in ("x", "y"):
+            try:
+                value = float(d[name]) if d.get(name) is not None else None
+                values[name] = value if value is None or math.isfinite(value) else None
+            except (TypeError, ValueError, OverflowError):
+                values[name] = None
+        category = d.get("category")
+        values["category"] = category if category in ALL_CATEGORIES else defaults.category
+        status = d.get("status")
+        values["status"] = status if status in ALL_STATUSES else defaults.status
+        return cls(**values)
+
 
 
 class TestPointStore:
@@ -69,10 +89,12 @@ class TestPointStore:
     Each board file may have a companion file named
     ``<board-basename>.testpoints.json``. Callers may also save explicitly.
     """
+    __test__ = False
 
     def __init__(self):
         self._points: List[TestPoint] = []
         self._path: Optional[str] = None
+        self.skipped = 0
 
     # ---- Iteration / lookup ----
     def __len__(self):
@@ -114,6 +136,7 @@ class TestPointStore:
 
     def clear(self):
         self._points = []
+        self.skipped = 0
 
     # ---- Persistence ----
     @property
@@ -131,23 +154,100 @@ class TestPointStore:
             "points": [p.to_dict() for p in self._points],
         }
         tmp = path + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(payload, f, indent=2, ensure_ascii=False)
-        os.replace(tmp, path)
-        self._path = path
+        try:
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(payload, f, indent=2, ensure_ascii=False)
+            os.replace(tmp, path)
+            self._path = path
+        finally:
+            try:
+                if os.path.exists(tmp):
+                    os.unlink(tmp)
+            except OSError:
+                pass
 
     def load(self, path: str):
-        with open(path, "r", encoding="utf-8") as f:
-            payload = json.load(f)
-        points = payload.get("points", [])
-        self._points = [TestPoint.from_dict(d) for d in points]
-        self._path = path
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                payload = json.load(f)
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ValueError(f"Invalid test point file: {exc}") from exc
+        if not isinstance(payload, dict):
+            raise ValueError("Invalid test point file: expected a JSON object")
+        points = payload.get("points")
+        if not isinstance(points, list):
+            raise ValueError("Invalid test point file: 'points' must be a list")
+        valid, self.skipped = [], 0
+        for entry in points:
+            if not isinstance(entry, dict):
+                self.skipped += 1
+                continue
+            valid.append(TestPoint.from_dict(entry))
+        self._points, self._path = valid, path
+
+    def autosave(self, path: Optional[str] = None) -> bool:
+        """Save without raising, for best-effort UI autosave callbacks."""
+        target = path or self._path
+        if not target:
+            return False
+        try:
+            self.save(target)
+            return True
+        except (OSError, TypeError, ValueError):
+            return False
 
     def load_if_exists(self, board_path: str) -> bool:
         path = self.companion_path_for_board(board_path)
         if os.path.isfile(path):
-            self.load(path)
+            try:
+                self.load(path)
+            except ValueError:
+                self.clear()
+                self._path = path
+                raise
             return True
         self.clear()
         self._path = path
         return False
+
+
+class TestPointUndoStack:
+    """Snapshot-based bounded undo/redo history for TestPointStore."""
+
+    def __init__(self, store: TestPointStore, limit: int = 50):
+        self.limit = max(1, int(limit))
+        self._snapshots = [self._snapshot(store)]
+        self._index = 0
+
+    @staticmethod
+    def _snapshot(store):
+        return [point.to_dict() for point in store]
+
+    @staticmethod
+    def _restore(store, snapshot):
+        store._points = [TestPoint.from_dict(item) for item in snapshot]
+
+    def record(self, store: TestPointStore):
+        """Record the current state after a successful store mutation."""
+        snapshot = self._snapshot(store)
+        if snapshot == self._snapshots[self._index]:
+            return
+        self._snapshots = self._snapshots[:self._index + 1]
+        self._snapshots.append(snapshot)
+        if len(self._snapshots) > self.limit + 1:
+            self._snapshots.pop(0)
+        self._index = len(self._snapshots) - 1
+
+    def undo(self, store: TestPointStore) -> bool:
+        if self._index <= 0:
+            return False
+        self._index -= 1
+        self._restore(store, self._snapshots[self._index])
+        return True
+
+    def redo(self, store: TestPointStore) -> bool:
+        if self._index >= len(self._snapshots) - 1:
+            return False
+        self._index += 1
+        self._restore(store, self._snapshots[self._index])
+        return True
