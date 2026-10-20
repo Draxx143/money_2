@@ -5,6 +5,7 @@ project file (.PrjPcb) if direct loading is not supported by the
 installed version of altium-monkey.
 """
 import os
+import logging
 from typing import Optional
 
 try:
@@ -16,6 +17,8 @@ except ImportError:
     AltiumPcbDoc = None
 
 from .model import Board, BoardZone, Component, Pad, Track
+
+logger = logging.getLogger(__name__)
 
 
 class AltiumParserError(Exception):
@@ -57,7 +60,8 @@ def parse_pcbdoc(path: str) -> Board:
                     raise AttributeError("altium-monkey provides no PcbDoc file loader")
                 load(path)
             return _convert_pcbdoc_object(pcbdoc)
-        except Exception as direct_exc:
+        except Exception as direct_exc:  # Try the documented project-loader fallback.
+            logger.warning("Direct Altium loading failed; trying fallback: %s", direct_exc)
             direct_error = f"{type(direct_exc).__name__}: {direct_exc}"
     else:
         direct_error = "Direct .PcbDoc loading is unavailable in the installed altium-monkey."
@@ -329,10 +333,12 @@ def _convert_pcbdoc_object(pcbdoc) -> Board:
                         layers=getattr(pad, "layers", []) or [],
                         net=getattr(pad, "net", None),
                     ))
-                except Exception:
+                except Exception as exc:  # Third-party object may have incomplete attributes.
+                    logger.warning("Skipping malformed Altium pad: %s", exc)
                     continue
             board.components.append(c)
-        except Exception:
+        except Exception as exc:  # Skip malformed third-party geometry records.
+            logger.warning("Skipping malformed Altium component/track: %s", exc)
             continue
 
     # Tracks
@@ -346,7 +352,8 @@ def _convert_pcbdoc_object(pcbdoc) -> Board:
                 width=_to_mm(getattr(t, "width", 0)),
                 layer=str(getattr(t, "layer", "F.Cu")),
             ))
-        except Exception:
+        except Exception as exc:  # Skip malformed third-party geometry records.
+            logger.warning("Skipping malformed Altium component/track: %s", exc)
             continue
 
     return board
@@ -383,10 +390,12 @@ def _convert_board(board_obj) -> Board:
                         layers=getattr(pad, "layers", []) or [],
                         net=getattr(pad, "net", None),
                     ))
-                except Exception:
+                except Exception as exc:  # Third-party object may have incomplete attributes.
+                    logger.warning("Skipping malformed Altium pad: %s", exc)
                     continue
             board.components.append(c)
-        except Exception:
+        except Exception as exc:  # Skip malformed third-party geometry records.
+            logger.warning("Skipping malformed Altium component/track: %s", exc)
             continue
 
     for t in getattr(board_obj, "tracks", []) or []:
@@ -399,7 +408,8 @@ def _convert_board(board_obj) -> Board:
                 width=_to_mm(getattr(t, "width", 0)),
                 layer=str(getattr(t, "layer", "F.Cu")),
             ))
-        except Exception:
+        except Exception as exc:  # Skip malformed third-party geometry records.
+            logger.warning("Skipping malformed Altium component/track: %s", exc)
             continue
 
     return board
