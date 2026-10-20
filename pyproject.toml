@@ -1,0 +1,13 @@
+[project]
+name = "pcb-analyzer"
+version = "0.6.26"
+description = "GTK 3 PCB inspection, test-point management, and diagnostics"
+requires-python = ">=3.8"
+license = { file = "LICENSE" }
+
+[project.optional-dependencies]
+altium = ["altium-monkey"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py38"
