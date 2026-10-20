@@ -1,15 +1,21 @@
 """GTK-free layout and annotation sizing helpers."""
 
 
-def clamp_workspace_divider(width, requested, viewer_min=500, panel_min=340, panel_max=520):
-    """Keep the PCB canvas useful while allowing a bounded inspector/chat pane."""
+def clamp_workspace_divider(width, requested, viewer_min=280, panel_min=250, panel_max=480):
+    """Clamp a split while adapting both panes to narrow windows.
+
+    The separator consumes a little width itself. When the available space
+    cannot satisfy both preferred minimums, use a proportional split instead
+    of forcing a child to a negative allocation.
+    """
     width = max(0, int(width))
     if width == 0:
         return int(requested)
-    low = max(viewer_min, width - panel_max)
-    high = max(low, width - panel_min)
-    low = min(low, width)
-    high = min(max(low, high), width)
+    available = max(0, width - 2)
+    if available < viewer_min + panel_min:
+        return min(available, max(0, int(round(available * 0.56))))
+    low = max(viewer_min, available - panel_max)
+    high = min(available - panel_min, available)
     return min(max(int(requested), low), high)
 
 

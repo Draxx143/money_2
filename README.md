@@ -6,7 +6,7 @@ The product's display name and subtitle can be changed in **Edit → Settings**.
 
 ## Current release and honest capability summary
 
-Release version: **0.6.31** (`VERSION` is the version source of truth).
+Release version: **0.6.32** (`VERSION` is the version source of truth).
 
 Implemented: GTK 3 application, Cairo PCB viewer, component search/selection, layer and side controls, KiCad PCB / EasyEDA Standard PCB JSON / Altium ASCII parsing, optional Altium binary parsing, PDF visual viewer, test-point JSON storage and CSV export, scalar tolerance evaluation, Ollama JSON-mode requests, local troubleshooting-case archive, and persistent AI conversation/settings.
 

@@ -9,9 +9,17 @@ from pcb_analyzer.ui_layout import clamp_workspace_divider, component_label_font
 
 class TestLayoutHelpers(unittest.TestCase):
     def test_divider_keeps_canvas_and_right_panel_in_bounds(self):
-        self.assertEqual(clamp_workspace_divider(1400, 1300), 1060)
-        self.assertEqual(clamp_workspace_divider(1400, 100), 880)
-        self.assertEqual(clamp_workspace_divider(900, 900), 560)
+        self.assertEqual(clamp_workspace_divider(1400, 1300), 1148)
+        self.assertEqual(clamp_workspace_divider(1400, 100), 918)
+        self.assertEqual(clamp_workspace_divider(900, 900), 648)
+
+    def test_narrow_windows_shrink_both_panes_without_negative_allocations(self):
+        for width in (1, 8, 200, 400, 529):
+            divider = clamp_workspace_divider(width, 10_000)
+            self.assertGreaterEqual(divider, 0)
+            self.assertLessEqual(divider, width)
+            if width > 1:
+                self.assertLess(divider, width)
 
     def test_component_labels_scale_up_and_have_readable_limits(self):
         small = component_label_font_sizes(2)

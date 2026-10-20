@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.6.32 — 2026-10-20
+
+- Reduced minimum workspace dimensions and made both panes shrinkable to avoid GTK negative-size allocations on smaller or scaled displays.
+- Adaptive divider sizing now preserves nonzero space for both PCB canvas and context pane when the window is narrow.
+
 ## 0.6.31 — 2026-10-20
 
 - Follow-up audit release: persisted user preferences and chats, introduced the multiline composer, tightened KiCad S-expression validation, and documented actual support boundaries.
