@@ -94,6 +94,7 @@ def _parse_ascii_pcbdoc(path: str) -> Board:
     pads = []
     regions = []
     text_values = {}
+    label_positions = {}
 
     try:
         with open(path, "r", encoding="utf-8-sig", errors="replace") as source:
@@ -129,11 +130,17 @@ def _parse_ascii_pcbdoc(path: str) -> Board:
                     cid = fields["COMPONENT"]
                     if fields.get("COMMENT", "").upper() == "TRUE":
                         text_values[cid] = _decode_widestring(fields.get("WIDESTRING", ""))
+                        label_positions[(cid, "value")] = (
+                            _ascii_mm(fields.get("X")), _ascii_mm(fields.get("Y"))
+                        )
                     elif fields.get("DESIGNATOR", "").upper() == "TRUE":
                         if cid in components_by_id:
                             components_by_id[cid].reference = _decode_widestring(
                                 fields.get("WIDESTRING", "")
                             ) or components_by_id[cid].reference
+                            label_positions[(cid, "reference")] = (
+                                _ascii_mm(fields.get("X")), _ascii_mm(fields.get("Y"))
+                            )
                 elif record == "pad":
                     pads.append(fields)
                 elif record == "track":
@@ -152,9 +159,13 @@ def _parse_ascii_pcbdoc(path: str) -> Board:
     if not board.components and not tracks and not pads:
         raise AltiumParserError("File is not a supported Altium ASCII PCB export")
 
-    for cid, value in text_values.items():
-        if cid in components_by_id:
-            components_by_id[cid].value = value
+    for cid, component in components_by_id.items():
+        if cid in text_values:
+            component.value = text_values[cid]
+        if (cid, "reference") in label_positions:
+            component.reference_x, component.reference_y = label_positions[(cid, "reference")]
+        if (cid, "value") in label_positions:
+            component.value_x, component.value_y = label_positions[(cid, "value")]
 
     for fields in pads:
         component = components_by_id.get(fields.get("COMPONENT", ""))

@@ -12,11 +12,12 @@ from .model import Board, Component
 
 # Layer colours (KiCad-like, dark theme friendly)
 LAYER_COLORS = {
-    "F.Cu": (0.85, 0.20, 0.20),   # red
-    "B.Cu": (0.20, 0.45, 0.85),   # blue
-    "Edge.Cuts": (0.88, 0.05, 0.80),  # magenta, like Altium/KiCad board edges
-    "F.SilkS": (0.90, 0.90, 0.90),
-    "B.SilkS": (0.35, 0.82, 0.25),
+    "F.Cu": (0.90, 0.12, 0.12),   # red top copper
+    "B.Cu": (0.00, 0.00, 1.00),   # vivid blue bottom copper (EasyEDA style)
+    "Edge.Cuts": (0.90, 0.00, 0.82),  # magenta board edge
+    "F.SilkS": (0.76, 0.68, 0.08),
+    "B.SilkS": (0.40, 0.90, 0.18),
+    "MECHANICAL15": (0.76, 0.68, 0.08),
 }
 
 SELECT_COLOR = (0.00, 0.82, 0.70)   # accent primary
@@ -112,7 +113,7 @@ class PcbViewer(Gtk.DrawingArea):
     # ---- Drawing ----
     def _on_draw(self, widget, cr):
         alloc = self.get_allocation()
-        cr.set_source_rgb(0.043, 0.059, 0.078)  # #0B0F14
+        cr.set_source_rgb(0.0, 0.0, 0.0)  # black PCB canvas, as in the source layout
         cr.paint()
 
         if not self.board:
@@ -130,10 +131,8 @@ class PcbViewer(Gtk.DrawingArea):
         for zone in getattr(self.board, "zones", []):
             if len(zone.points) < 3:
                 continue
-            if zone.layer == "F.Cu":
-                cr.set_source_rgba(0.05, 0.18, 0.96, 0.88)
-            else:
-                cr.set_source_rgba(0.08, 0.24, 0.92, 0.88)
+            zone_color = LAYER_COLORS.get(zone.layer, (0.0, 0.0, 1.0))
+            cr.set_source_rgb(*zone_color)
             x, y = self.mm_to_px(*zone.points[0])
             cr.move_to(x, y)
             for point in zone.points[1:]:
@@ -175,24 +174,32 @@ class PcbViewer(Gtk.DrawingArea):
                 px, py = self.mm_to_px(c.x + pad.x, c.y + pad.y)
                 w = pad.width * self.scale
                 h = pad.height * self.scale
+                pad_layer = next(iter(pad.layers), c.layer)
                 if is_sel:
                     cr.set_source_rgb(*SELECT_COLOR)
                 elif is_hover:
                     cr.set_source_rgb(*HOVER_COLOR)
+                elif getattr(pad, "hole_diameter", 0.0) > 0:
+                    # Neutral metal annulus for plated through-hole pads.
+                    cr.set_source_rgb(0.72, 0.74, 0.79)
                 else:
-                    cr.set_source_rgb(0.80, 0.80, 0.55)
+                    cr.set_source_rgb(*LAYER_COLORS.get(pad_layer, (0.0, 0.0, 1.0)))
                 if pad.shape.lower() in ("circle", "round"):
                     cr.arc(px, py, max(w, h) / 2, 0, 2 * math.pi)
                 else:
                     cr.rectangle(px - w / 2, py - h / 2, w, h)
                 cr.fill()
                 if getattr(pad, "hole_diameter", 0.0) > 0:
-                    cr.set_source_rgb(0.043, 0.059, 0.078)
+                    cr.set_source_rgb(0.0, 0.0, 0.0)
                     cr.arc(px, py, pad.hole_diameter * self.scale / 2, 0, 2 * math.pi)
                     cr.fill()
 
-            # Reference label
-            px, py = self.mm_to_px(c.x, c.y)
+            # Altium stores designator/value text at independent board
+            # coordinates; use those positions rather than centering labels on
+            # component origins (which causes collisions in dense boards).
+            ref_x = c.reference_x if c.reference_x is not None else c.x
+            ref_y = c.reference_y if c.reference_y is not None else c.y
+            px, py = self.mm_to_px(ref_x, ref_y)
             cr.select_font_face("Sans", 0, 0)
             cr.set_font_size(11)
             if is_sel:
@@ -200,9 +207,18 @@ class PcbViewer(Gtk.DrawingArea):
             elif is_hover:
                 cr.set_source_rgb(*HOVER_COLOR)
             else:
-                cr.set_source_rgb(0.95, 0.95, 0.95)
-            cr.move_to(px + 4, py - 4)
+                silk_layer = "B.SilkS" if c.layer == "B.Cu" else "F.SilkS"
+                cr.set_source_rgb(*LAYER_COLORS[silk_layer])
+            cr.move_to(px + 2, py - 2)
             cr.show_text(c.reference)
+
+            if c.value:
+                value_x = c.value_x if c.value_x is not None else c.x
+                value_y = c.value_y if c.value_y is not None else c.y + 1.5
+                vx, vy = self.mm_to_px(value_x, value_y)
+                cr.set_font_size(9)
+                cr.move_to(vx + 2, vy - 2)
+                cr.show_text(c.value)
 
         # Test-point marker
         if self.marker is not None:

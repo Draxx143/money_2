@@ -28,6 +28,8 @@ class TestAltiumAsciiParser(unittest.TestCase):
         self.assertEqual(capacitor.value, "100nF")
         self.assertEqual(capacitor.layer, "B.Cu")
         self.assertEqual(capacitor.footprint, "CAP-SMD_L2.2-W1.3-RD")
+        self.assertIsNotNone(capacitor.reference_x)
+        self.assertIsNotNone(capacitor.value_x)
         self.assertEqual(len(capacitor.pads), 2)
         self.assertEqual(capacitor.pads[0].net, "GND")
         self.assertAlmostEqual(capacitor.x, 53.0700, places=2)

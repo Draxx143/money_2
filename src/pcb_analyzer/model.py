@@ -29,6 +29,10 @@ class Component:
     rotation: float = 0.0
     layer: str = "F.Cu"
     pads: List[Pad] = field(default_factory=list)
+    reference_x: Optional[float] = None
+    reference_y: Optional[float] = None
+    value_x: Optional[float] = None
+    value_y: Optional[float] = None
 
 
 @dataclass
