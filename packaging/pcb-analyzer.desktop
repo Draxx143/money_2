@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=PCB Analyzer
+Comment=Professional PCB Analysis & AI Diagnostics Workbench
+Exec=pcb-analyzer
+Icon=applications-electronics
+Terminal=false
+Categories=Development;Electronics;
+StartupNotify=false

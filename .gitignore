@@ -1,0 +1,11 @@
+# Build outputs
+/dist/
+/build/
+*.deb
+
+# Python-generated files
+__pycache__/
+*.py[cod]
+
+# Local test-point data
+*.testpoints.json

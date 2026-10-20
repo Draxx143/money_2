@@ -1,0 +1,1085 @@
+#!/usr/bin/python3
+"""PCB Analyzer — GTK 3 desktop workbench.
+
+Milestone 5: test-point management.
+"""
+import os
+import sys
+
+_HERE = os.path.dirname(os.path.abspath(__file__))
+if os.path.isdir(os.path.join(_HERE, "pcb_analyzer")):
+    sys.path.insert(0, _HERE)
+else:
+    sys.path.insert(0, os.path.join(_HERE, "..", "share", "pcb-analyzer", "src"))
+
+import gi
+
+gi.require_version("Gtk", "3.0")
+gi.require_version("Gdk", "3.0")
+from gi.repository import Gdk, Gtk
+
+from pcb_analyzer.diagnostics import (
+    evaluate_testpoint, suggest_testpoints_for_component, summarize_results,
+)
+from pcb_analyzer.kicad_parser import parse_pcb
+from pcb_analyzer.model import Board
+from pcb_analyzer.pdf_viewer import PdfViewer
+from pcb_analyzer.testpoints import (
+    ALL_CATEGORIES, ALL_STATUSES,
+    STATUS_FAIL, STATUS_NOT_TESTED, STATUS_PASS, STATUS_UNKNOWN,
+    TestPoint, TestPointStore,
+)
+from pcb_analyzer.viewer import PcbViewer
+from pcb_analyzer.ai_agent import OllamaClient, ask_ai_async
+
+APP_NAME = "PCB Analyzer"
+APP_SUBTITLE = "Analysis & Diagnostics Workbench"
+APP_VERSION = "0.5.0"
+
+BG_MAIN = "#0B0F14"
+BG_PANEL = "#121923"
+BG_CARD = "#18222E"
+BORDER = "#283544"
+ACCENT_PRIMARY = "#00D1B2"
+ACCENT_SECONDARY = "#4DA3FF"
+TEXT_MAIN = "#F1F5F9"
+TEXT_SECONDARY = "#94A3B8"
+
+APP_CSS = f"""
+/* ---------- Base & Universal Reset ---------- */
+*, *:focus, *:active, *:hover {{
+    outline: none;
+    box-shadow: none;
+    text-shadow: none;
+    -gtk-outline-radius: 0;
+}}
+window, dialog, messagedialog, .background {{
+    background-color: {BG_MAIN};
+    color: {TEXT_MAIN};
+}}
+label {{ color: {TEXT_MAIN}; background: transparent; }}
+label.dim {{ color: {TEXT_SECONDARY}; }}
+label.inspector-value {{ color: {ACCENT_SECONDARY}; }}
+
+/* ---------- Menus ---------- */
+menubar, menu {{ background-color: {BG_PANEL}; color: {TEXT_MAIN}; border: none; }}
+menubar > menuitem, menu > menuitem {{ color: {TEXT_MAIN}; padding: 4px 10px; }}
+menubar > menuitem:hover, menu > menuitem:hover {{ background-color: {BG_CARD}; }}
+menu separator {{ background-color: {BORDER}; }}
+
+/* ---------- Toolbars & Layout ---------- */
+toolbar, .toolbar {{ background-color: {BG_PANEL}; border-bottom: 1px solid {BORDER}; padding: 4px; }}
+box {{ background-color: transparent; }}
+paned > separator {{ background-color: {BORDER}; min-width: 2px; min-height: 2px; }}
+separator {{ background-color: {BORDER}; }}
+
+/* ---------- Buttons ---------- */
+button {{
+    background-color: {BG_CARD}; color: {TEXT_MAIN};
+    border: 1px solid {BORDER}; border-radius: 4px; padding: 4px 12px;
+    background-image: none;
+}}
+button:hover {{ background-color: {BORDER}; }}
+button:active, button:checked {{ background-color: {ACCENT_PRIMARY}; color: {BG_MAIN}; }}
+button:disabled {{ color: {TEXT_SECONDARY}; border-color: {BG_CARD}; background-color: {BG_MAIN}; }}
+
+/* ---------- Inputs ---------- */
+entry, searchentry, spinbutton, textview, textview text {{
+    background-color: {BG_CARD}; color: {TEXT_MAIN};
+    border: 1px solid {BORDER}; border-radius: 4px; padding: 4px;
+    background-image: none;
+}}
+entry:focus, searchentry:focus, spinbutton:focus {{ border-color: {ACCENT_PRIMARY}; }}
+combobox button {{ background-color: {BG_CARD}; color: {TEXT_MAIN}; border: 1px solid {BORDER}; background-image: none; }}
+combobox menu {{ background-color: {BG_PANEL}; color: {TEXT_MAIN}; border: 1px solid {BORDER}; }}
+combobox menu menuitem:hover {{ background-color: {BG_CARD}; }}
+
+/* ---------- Tree views ---------- */
+treeview, treeview.view {{ background-color: {BG_PANEL}; color: {TEXT_MAIN}; border: none; }}
+treeview:selected, treeview.view:selected {{ background-color: {ACCENT_PRIMARY}; color: {BG_MAIN}; }}
+treeview:hover {{ background-color: {BG_CARD}; }}
+treeview header button {{ background-color: {BG_CARD}; color: {TEXT_SECONDARY}; border-radius: 0; border-bottom: 1px solid {BORDER}; background-image: none; }}
+treeview header button:hover {{ background-color: {BORDER}; }}
+
+/* ---------- Notebooks ---------- */
+notebook {{ background-color: {BG_MAIN}; border: none; }}
+notebook > header {{ background-color: {BG_PANEL}; border-bottom: 1px solid {BORDER}; }}
+notebook > header > tabs > tab {{ background-color: {BG_PANEL}; color: {TEXT_SECONDARY}; padding: 6px 12px; border: 1px solid transparent; background-image: none; }}
+notebook > header > tabs > tab:checked {{ background-color: {BG_CARD}; color: {TEXT_MAIN}; border-bottom: 2px solid {ACCENT_PRIMARY}; }}
+notebook > header > tabs > tab:hover {{ color: {TEXT_MAIN}; }}
+notebook > stack {{ background-color: {BG_MAIN}; }}
+
+/* ---------- Panels, Scrolled Windows, Scrollbars ---------- */
+.panel-title {{ background-color: {BG_PANEL}; color: {TEXT_SECONDARY}; padding: 6px; border-bottom: 1px solid {BORDER}; }}
+scrolledwindow {{ background-color: {BG_PANEL}; border: none; }}
+scrolledwindow undershoot, scrolledwindow overshoot {{ background: none; }}
+scrollbar {{ background-color: {BG_PANEL}; border: none; }}
+scrollbar slider {{ background-color: {BORDER}; border-radius: 4px; min-width: 6px; min-height: 6px; }}
+scrollbar slider:hover {{ background-color: {TEXT_SECONDARY}; }}
+
+/* ---------- Status bar ---------- */
+.statusbar {{ background-color: {BG_PANEL}; color: {TEXT_SECONDARY}; border-top: 1px solid {BORDER}; padding: 4px; }}
+
+/* ---------- Dialogs & HeaderBars ---------- */
+dialog .dialog-vbox {{ background-color: {BG_MAIN}; }}
+headerbar, .titlebar {{
+    background-color: {BG_MAIN}; background-image: none; color: {TEXT_MAIN};
+    border-bottom: 1px solid {BORDER}; padding: 0 8px; min-height: 36px;
+}}
+headerbar:backdrop, .titlebar:backdrop {{ background-color: {BG_MAIN}; color: {TEXT_SECONDARY}; }}
+headerbar .title, .titlebar .title {{ color: {TEXT_MAIN}; font-weight: bold; background: transparent; }}
+headerbar button, .titlebar button {{
+    background-color: {BG_CARD}; color: {TEXT_MAIN}; border: 1px solid {BORDER};
+    border-radius: 4px; padding: 4px 12px; margin: 4px; background-image: none;
+}}
+headerbar button:hover, .titlebar button:hover {{ background-color: {BORDER}; }}
+headerbar button.close, .titlebar button.close {{ background-color: transparent; border-color: transparent; }}
+headerbar button.close:hover, .titlebar button.close:hover {{ background-color: #9b2226; color: white; }}
+
+/* ---------- FileChooser ---------- */
+filechooser, .filechooser {{ background-color: {BG_MAIN}; color: {TEXT_MAIN}; }}
+filechooser .sidebar {{ background-color: {BG_PANEL}; border-right: 1px solid {BORDER}; }}
+filechooser .sidebar row {{ background-color: transparent; color: {TEXT_MAIN}; border-radius: 4px; }}
+filechooser .sidebar row:hover {{ background-color: {BG_CARD}; }}
+filechooser .sidebar row:selected {{ background-color: {ACCENT_PRIMARY}; color: {BG_MAIN}; }}
+filechooser .view, filechooser treeview {{ background-color: {BG_MAIN}; color: {TEXT_MAIN}; }}
+filechooser treeview:selected {{ background-color: {ACCENT_PRIMARY}; color: {BG_MAIN}; }}
+filechooser treeview header button {{ background-color: {BG_CARD}; color: {TEXT_SECONDARY}; border: none; }}
+filechooser .dialog-action-box {{ background-color: {BG_PANEL}; border-top: 1px solid {BORDER}; }}
+filechooser button {{ background-color: {BG_CARD}; color: {TEXT_MAIN}; border: 1px solid {BORDER}; background-image: none; }}
+filechooser button:hover {{ background-color: {BORDER}; }}
+filechooser entry {{ background-color: {BG_CARD}; color: {TEXT_MAIN}; border: 1px solid {BORDER}; }}
+filechooser combobox button {{ background-color: {BG_CARD}; color: {TEXT_MAIN}; border: 1px solid {BORDER}; }}
+filechooser pathbar button {{ background-color: {BG_PANEL}; color: {TEXT_SECONDARY}; border-radius: 4px; border: none; }}
+filechooser pathbar button:hover {{ background-color: {BG_CARD}; color: {TEXT_MAIN}; }}
+"""
+
+
+
+
+
+def panel_title(text):
+    label = Gtk.Label(label=text)
+    label.get_style_context().add_class("panel-title")
+    label.set_xalign(0)
+    return label
+
+
+class TestPointDialog(Gtk.Dialog):
+    def __init__(self, parent, board, tp=None, preset_ref=None, preset_pad=None, preset_net=None):
+        title = "Edit Test Point" if tp else "Add Test Point"
+        super().__init__(title=title, transient_for=parent, modal=True, use_header_bar=True)
+        self.add_buttons(Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL,
+                         Gtk.STOCK_OK, Gtk.ResponseType.OK)
+        self.board = board
+        self.tp = tp
+
+        grid = Gtk.Grid(row_spacing=6, column_spacing=12, margin=12)
+        self.get_content_area().add(grid)
+
+        self.label_entry = Gtk.Entry()
+        self.ref_entry = Gtk.Entry()
+        self.pad_entry = Gtk.Entry()
+        self.net_entry = Gtk.Entry()
+        self.category_combo = Gtk.ComboBoxText()
+        for c in ALL_CATEGORIES:
+            self.category_combo.append_text(c)
+        self.category_combo.set_active(0)
+        self.expected_entry = Gtk.Entry()
+        self.actual_entry = Gtk.Entry()
+        self.unit_entry = Gtk.Entry()
+        self.tolerance_entry = Gtk.Entry()
+        self.status_combo = Gtk.ComboBoxText()
+        for s in ALL_STATUSES:
+            self.status_combo.append_text(s)
+        self.status_combo.set_active(0)
+        self.instrument_entry = Gtk.Entry()
+        self.notes_view = Gtk.TextView()
+        self.notes_view.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
+        notes_scroll = Gtk.ScrolledWindow()
+        notes_scroll.set_min_content_height(60)
+        notes_scroll.add(self.notes_view)
+
+        rows = [
+            ("Label:", self.label_entry),
+            ("Reference:", self.ref_entry),
+            ("Pad #:", self.pad_entry),
+            ("Net:", self.net_entry),
+            ("Category:", self.category_combo),
+            ("Expected:", self.expected_entry),
+            ("Actual:", self.actual_entry),
+            ("Unit:", self.unit_entry),
+            ("Tolerance:", self.tolerance_entry),
+            ("Status:", self.status_combo),
+            ("Instrument:", self.instrument_entry),
+            ("Notes:", notes_scroll),
+        ]
+        for i, (label, widget) in enumerate(rows):
+            lbl = Gtk.Label(label=label, xalign=0)
+            lbl.get_style_context().add_class("dim")
+            grid.attach(lbl, 0, i, 1, 1)
+            grid.attach(widget, 1, i, 1, 1)
+
+        if tp:
+            self.label_entry.set_text(tp.label)
+            self.ref_entry.set_text(tp.reference)
+            self.pad_entry.set_text(tp.pad_number)
+            self.net_entry.set_text(tp.net)
+            idx = ALL_CATEGORIES.index(tp.category) if tp.category in ALL_CATEGORIES else 0
+            self.category_combo.set_active(idx)
+            self.expected_entry.set_text(tp.expected_value)
+            self.actual_entry.set_text(tp.actual_value)
+            self.unit_entry.set_text(tp.unit)
+            self.tolerance_entry.set_text(tp.tolerance)
+            idx = ALL_STATUSES.index(tp.status) if tp.status in ALL_STATUSES else 0
+            self.status_combo.set_active(idx)
+            self.instrument_entry.set_text(tp.instrument)
+            self.notes_view.get_buffer().set_text(tp.notes or "")
+        else:
+            if preset_ref:
+                self.ref_entry.set_text(preset_ref)
+            if preset_pad:
+                self.pad_entry.set_text(preset_pad)
+            if preset_net:
+                self.net_entry.set_text(preset_net)
+
+        self.show_all()
+
+    def build_tp(self):
+        notes_buf = self.notes_view.get_buffer()
+        notes = notes_buf.get_text(notes_buf.get_start_iter(),
+                                   notes_buf.get_end_iter(), True)
+        tp = self.tp or TestPoint()
+        tp.label = self.label_entry.get_text().strip()
+        tp.reference = self.ref_entry.get_text().strip()
+        tp.pad_number = self.pad_entry.get_text().strip()
+        tp.net = self.net_entry.get_text().strip()
+        tp.category = self.category_combo.get_active_text() or "Generic"
+        tp.expected_value = self.expected_entry.get_text().strip()
+        tp.actual_value = self.actual_entry.get_text().strip()
+        tp.unit = self.unit_entry.get_text().strip()
+        tp.tolerance = self.tolerance_entry.get_text().strip()
+        tp.status = self.status_combo.get_active_text() or STATUS_NOT_TESTED
+        tp.instrument = self.instrument_entry.get_text().strip()
+        tp.notes = notes.strip()
+
+        # If board and reference/pad present, resolve coordinates.
+        if self.board and tp.reference and tp.pad_number:
+            comp = self.board.find_component(tp.reference)
+            if comp:
+                for pad in comp.pads:
+                    if pad.number == tp.pad_number:
+                        tp.x = comp.x + pad.x
+                        tp.y = comp.y + pad.y
+                        break
+        return tp
+
+
+class MainWindow(Gtk.ApplicationWindow):
+    def __init__(self, app):
+        super().__init__(application=app, title=f"{APP_NAME} — {APP_SUBTITLE}")
+        self.set_default_size(1600, 950)
+        self.set_name("main-window")
+        self.board: Board = None
+        self.board_path: str = None
+        self.store = TestPointStore()
+
+        vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        self.add(vbox)
+        vbox.pack_start(self.build_menubar(), False, False, 0)
+        vbox.pack_start(self.build_toolbar(), False, False, 0)
+
+        paned = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL)
+        paned.set_position(300)
+        vbox.pack_start(paned, True, True, 0)
+        paned.pack1(self.build_component_explorer(), resize=False, shrink=False)
+
+        inner = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        paned.pack2(inner, resize=True, shrink=False)
+
+        hpaned = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL)
+        hpaned.set_position(1000)
+        inner.pack_start(hpaned, True, True, 0)
+
+        self.viewer = PcbViewer()
+        self.viewer.connect("component-selected", self.on_viewer_selected)
+        hpaned.pack1(self.viewer, resize=True, shrink=False)
+        hpaned.pack2(self.build_right_panels(), resize=False, shrink=False)
+
+        inner.pack_start(self.build_bottom_notebook(), True, True, 0)
+        vbox.pack_start(self.build_statusbar(), False, False, 0)
+
+    # ---- Menus / toolbar ----
+    def build_menubar(self):
+        menubar = Gtk.MenuBar()
+
+        file_m = Gtk.MenuItem(label="File")
+        fm = Gtk.Menu()
+        file_m.set_submenu(fm)
+        self.add_menu_item(fm, "Open Board (KiCad)…", self.on_open_board)
+        self.add_menu_item(fm, "Open Schematic (PDF)…", self.on_open_pdf)
+        fm.append(Gtk.SeparatorMenuItem())
+        self.add_menu_item(fm, "Load Test Points…", self.on_load_testpoints)
+        self.add_menu_item(fm, "Save Test Points…", self.on_save_testpoints)
+        fm.append(Gtk.SeparatorMenuItem())
+        self.add_menu_item(fm, "Quit", self.on_quit)
+        menubar.append(file_m)
+
+        edit_m = Gtk.MenuItem(label="Edit")
+        em = Gtk.Menu()
+        edit_m.set_submenu(em)
+        self.add_menu_item(em, "Settings…", self.on_settings)
+        menubar.append(edit_m)
+
+        view_m = Gtk.MenuItem(label="View")
+        vm = Gtk.Menu()
+        view_m.set_submenu(vm)
+        self.add_menu_item(vm, "Fit Board to View", self.on_fit_view)
+        menubar.append(view_m)
+
+        for name in ("Board", "Analysis", "Test Points", "Tools", "Database"):
+            m = Gtk.MenuItem(label=name)
+            sub = Gtk.Menu()
+            m.set_submenu(sub)
+            item = Gtk.MenuItem(label="Available in a later milestone")
+            item.set_sensitive(False)
+            sub.append(item)
+            menubar.append(m)
+
+        help_m = Gtk.MenuItem(label="Help")
+        hm = Gtk.Menu()
+        help_m.set_submenu(hm)
+        self.add_menu_item(hm, "About", self.on_about)
+        menubar.append(help_m)
+
+        menubar.show_all()
+        return menubar
+
+    def add_menu_item(self, menu, label, callback):
+        item = Gtk.MenuItem(label=label)
+        item.connect("activate", callback)
+        menu.append(item)
+        return item
+
+    def build_toolbar(self):
+        tb = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        tb.get_style_context().add_class("toolbar")
+        for label, cb in (
+            ("Open Board", self.on_open_board),
+            ("Open PDF", self.on_open_pdf),
+            ("Fit", self.on_fit_view),
+        ):
+            b = Gtk.Button(label=label)
+            b.connect("clicked", cb)
+            tb.pack_start(b, False, False, 0)
+        return tb
+
+    # ---- Explorer ----
+    def build_component_explorer(self):
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        box.set_size_request(280, -1)
+        box.pack_start(panel_title("Component Explorer"), False, False, 0)
+
+        bar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+        bar.set_margin_top(6); bar.set_margin_start(6); bar.set_margin_end(6); bar.set_margin_bottom(6)
+        self.search_entry = Gtk.SearchEntry()
+        self.search_entry.set_placeholder_text("Ref, value, footprint…")
+        self.search_entry.connect("search-changed", self.on_search_changed)
+        bar.pack_start(self.search_entry, True, True, 0)
+        self.layer_combo = Gtk.ComboBoxText()
+        self.layer_combo.append_text("All layers")
+        self.layer_combo.append_text("F.Cu")
+        self.layer_combo.append_text("B.Cu")
+        self.layer_combo.set_active(0)
+        self.layer_combo.connect("changed", self.on_filter_changed)
+        bar.pack_start(self.layer_combo, False, False, 0)
+        box.pack_start(bar, False, False, 0)
+
+        self.component_store = Gtk.ListStore(str, str, str)
+        self.component_filter = self.component_store.filter_new()
+        self.component_filter.set_visible_func(self._component_visible)
+        self.component_view = Gtk.TreeView(model=self.component_filter)
+        for i, name in enumerate(("Ref", "Value", "Footprint")):
+            r = Gtk.CellRendererText()
+            col = Gtk.TreeViewColumn(name, r, text=i)
+            col.set_resizable(True)
+            self.component_view.append_column(col)
+        self.component_view.get_selection().connect("changed", self.on_tree_selection_changed)
+        self.component_view.connect("motion-notify-event", self.on_tree_hover)
+        self.component_view.add_events(Gdk.EventMask.POINTER_MOTION_MASK)
+        self.component_view.connect("leave-notify-event", self.on_tree_leave)
+        scroll = Gtk.ScrolledWindow()
+        scroll.add(self.component_view)
+        box.pack_start(scroll, True, True, 0)
+        return box
+
+    def _component_visible(self, model, tree_iter, _data):
+        text = self.search_entry.get_text().strip().lower()
+        if text:
+            if text not in " ".join(str(v) for v in model[tree_iter]).lower():
+                return False
+        active = self.layer_combo.get_active_id() or "All layers"
+        if active in ("F.Cu", "B.Cu") and self.board:
+            ref = model[tree_iter][0]
+            comp = self.board.find_component(ref)
+            if not comp or comp.layer != active:
+                return False
+        return True
+
+    # ---- Right panels ----
+    def build_right_panels(self):
+        vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        vbox.set_size_request(380, -1)
+
+        ai_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        ai_box.set_size_request(-1, 350) # Fixed height for chat area
+
+        # Header with model status
+        ai_header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+        ai_header.pack_start(panel_title("AI Diagnostic Assistant"), True, True, 0)
+        self.btn_ai_config = Gtk.Button(label="Configure")
+        self.btn_ai_config.connect("clicked", self.on_ai_config)
+        ai_header.pack_end(self.btn_ai_config, False, False, 6)
+        ai_box.pack_start(ai_header, False, False, 0)
+
+        # Chat history (TextView)
+        self.chat_buffer = Gtk.TextBuffer()
+        self.chat_view = Gtk.TextView(buffer=self.chat_buffer)
+        self.chat_view.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
+        self.chat_view.set_editable(False)
+        self.chat_view.set_cursor_visible(False)
+        self.chat_view.set_margin_top(6)
+        self.chat_view.set_margin_start(6)
+        self.chat_view.set_margin_end(6)
+        chat_scroll = Gtk.ScrolledWindow()
+        chat_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        chat_scroll.add(self.chat_view)
+        ai_box.pack_start(chat_scroll, True, True, 0)
+
+        # Input area
+        input_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+        input_box.set_margin_top(6); input_box.set_margin_start(6); input_box.set_margin_end(6); input_box.set_margin_bottom(6)
+        self.ai_entry = Gtk.Entry()
+        self.ai_entry.set_placeholder_text("Describe the symptom (e.g. No power on U1)…")
+        self.ai_entry.connect("activate", self.on_ai_send)
+        input_box.pack_start(self.ai_entry, True, True, 0)
+        self.btn_ai_send = Gtk.Button(label="Send")
+        self.btn_ai_send.connect("clicked", self.on_ai_send)
+        input_box.pack_start(self.btn_ai_send, False, False, 0)
+        ai_box.pack_start(input_box, False, False, 0)
+
+        vbox.pack_start(ai_box, False, False, 0)
+
+        # State
+        self.ollama_client = OllamaClient()
+
+        insp_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        insp_box.pack_start(panel_title("Component Inspector"), False, False, 0)
+        self.inspector_grid = Gtk.Grid(row_spacing=4, column_spacing=8)
+        self.inspector_grid.set_margin_top(8)
+        self.inspector_grid.set_margin_start(8)
+        self.inspector_grid.set_margin_end(8)
+        insp_box.pack_start(self.inspector_grid, False, False, 0)
+
+        self.pad_store = Gtk.ListStore(str, str, str, str, str)
+        self.pad_view = Gtk.TreeView(model=self.pad_store)
+        for i, name in enumerate(("Pad", "Shape", "Size", "Layers", "Net")):
+            r = Gtk.CellRendererText()
+            col = Gtk.TreeViewColumn(name, r, text=i)
+            col.set_resizable(True)
+            self.pad_view.append_column(col)
+        pad_scroll = Gtk.ScrolledWindow()
+        pad_scroll.add(self.pad_view)
+        pad_scroll.set_margin_top(6)
+        insp_box.pack_start(pad_scroll, True, True, 0)
+
+        btn_add_tp = Gtk.Button(label="Add Test Point for Selected Pad")
+        btn_add_tp.connect("clicked", self.on_add_tp_from_inspector)
+        insp_box.pack_start(btn_add_tp, False, False, 6)
+
+        vbox.pack_start(insp_box, True, True, 0)
+
+        self._inspector_labels = {}
+        rows = [("Reference", "reference"), ("Value", "value"),
+                ("Footprint", "footprint"), ("Layer", "layer"),
+                ("Position", "position"), ("Rotation", "rotation")]
+        for i, (title, key) in enumerate(rows):
+            k = Gtk.Label(label=f"{title}:", xalign=0)
+            k.get_style_context().add_class("dim")
+            v = Gtk.Label(label="—", xalign=0)
+            v.get_style_context().add_class("inspector-value")
+            self.inspector_grid.attach(k, 0, i, 1, 1)
+            self.inspector_grid.attach(v, 1, i, 1, 1)
+            self._inspector_labels[key] = v
+        self.inspector_grid.show_all()
+        return vbox
+
+    # ---- Bottom notebook ----
+    def build_bottom_notebook(self):
+        nb = Gtk.Notebook()
+        nb.set_size_request(-1, 260)
+
+        logs_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        self.log_label = Gtk.Label(label="No entries yet.")
+        self.log_label.get_style_context().add_class("dim")
+        self.log_label.set_xalign(0)
+        self.log_label.set_margin_top(8); self.log_label.set_margin_start(8)
+        logs_box.pack_start(self.log_label, False, False, 0)
+        nb.append_page(logs_box, Gtk.Label(label="Logs"))
+
+        self.pdf_viewer = PdfViewer()
+        nb.append_page(self.pdf_viewer, Gtk.Label(label="Schematic (PDF)"))
+
+        nb.append_page(self.build_testpoints_tab(), Gtk.Label(label="Test Points"))
+
+        nb.show_all()
+        self.bottom_notebook = nb
+        return nb
+
+    def build_testpoints_tab(self):
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+
+        bar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        bar.set_margin_top(6); bar.set_margin_start(6); bar.set_margin_end(6); bar.set_margin_bottom(6)
+        for label, cb in (
+            ("Add", self.on_add_testpoint),
+            ("Edit", self.on_edit_testpoint),
+            ("Delete", self.on_delete_testpoint),
+            ("Go to Board", self.on_goto_testpoint),
+            ("Auto-evaluate", self.on_auto_evaluate),
+            ("Suggest for Selected", self.on_suggest_for_component),
+        ):
+            b = Gtk.Button(label=label)
+            b.connect("clicked", cb)
+            bar.pack_start(b, False, False, 0)
+        box.pack_start(bar, False, False, 0)
+
+        # Columns: Label, Ref, Pad, Net, Expected, Actual, Unit, Status, Reason (+hidden id)
+        self.tp_store = Gtk.ListStore(str, str, str, str, str, str, str, str, str, str)
+        self.tp_view = Gtk.TreeView(model=self.tp_store)
+        cols = ("Label", "Ref", "Pad", "Net", "Expected", "Actual",
+                "Unit", "Status", "Reason")
+        for i, name in enumerate(cols):
+            r = Gtk.CellRendererText()
+            col = Gtk.TreeViewColumn(name, r, text=i)
+            col.set_resizable(True)
+            self.tp_view.append_column(col)
+
+        # Colour rows by status (column index 7)
+        self.tp_view.set_row_separator_func(lambda m, it: False)
+        for status, color in (
+            (STATUS_PASS, "#1b7a3a"),
+            (STATUS_FAIL, "#9b2226"),
+            (STATUS_UNKNOWN, "#a07600"),
+        ):
+            pass  # kept for documentation; colouring happens in refresh
+
+        self.tp_view.get_selection().connect("changed", self.on_tp_selection_changed)
+
+        scroll = Gtk.ScrolledWindow()
+        scroll.add(self.tp_view)
+        box.pack_start(scroll, True, True, 0)
+        return box
+
+    def build_statusbar(self):
+        bar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+        bar.get_style_context().add_class("statusbar")
+        self.status_project = Gtk.Label(label="No project")
+        self.status_side = Gtk.Label(label="Side: -")
+        self.status_model = Gtk.Label(label="AI: not configured")
+        self.status_task = Gtk.Label(label="Idle")
+        for w in (self.status_project, self.status_side, self.status_model, self.status_task):
+            w.get_style_context().add_class("dim")
+            bar.pack_start(w, False, False, 0)
+        return bar
+
+    # ---- File actions ----
+    def on_open_board(self, _w):
+        dialog = Gtk.FileChooserDialog(
+            title="Open PCB File",
+            parent=self,
+            action=Gtk.FileChooserAction.OPEN,
+            use_header_bar=True
+        )
+        dialog.add_buttons(Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL,
+                           Gtk.STOCK_OPEN, Gtk.ResponseType.OK)
+
+        # Filter: All supported formats
+        f_all = Gtk.FileFilter()
+        f_all.set_name("All Supported PCB Files (*.kicad_pcb, *.pcbdoc, *.prjpcb)")
+        f_all.add_pattern("*.kicad_pcb")
+        f_all.add_pattern("*.pcbdoc")
+        f_all.add_pattern("*.PcbDoc")
+        f_all.add_pattern("*.prjpcb")
+        f_all.add_pattern("*.PrjPcb")
+        dialog.add_filter(f_all)
+
+        # Filter: KiCad only
+        f_kicad = Gtk.FileFilter()
+        f_kicad.set_name("KiCad PCB (*.kicad_pcb)")
+        f_kicad.add_pattern("*.kicad_pcb")
+        dialog.add_filter(f_kicad)
+
+        # Filter: Altium only
+        f_altium = Gtk.FileFilter()
+        f_altium.set_name("Altium (*.pcbdoc, *.prjpcb)")
+        f_altium.add_pattern("*.pcbdoc")
+        f_altium.add_pattern("*.PcbDoc")
+        f_altium.add_pattern("*.prjpcb")
+        f_altium.add_pattern("*.PrjPcb")
+        dialog.add_filter(f_altium)
+
+        # Filter: All files
+        f_any = Gtk.FileFilter()
+        f_any.set_name("All Files")
+        f_any.add_pattern("*")
+        dialog.add_filter(f_any)
+
+        if dialog.run() == Gtk.ResponseType.OK:
+            file_path = dialog.get_filename()
+            dialog.destroy()
+            self.load_board(file_path)
+        else:
+            dialog.destroy()
+
+    def on_open_pdf(self, _w):
+        path = self._choose_file("Open Schematic PDF", "*.pdf")
+        if path:
+            self.load_pdf(path)
+
+    def on_load_testpoints(self, _w):
+        path = self._choose_file("Load Test Points", "*.json")
+        if not path:
+            return
+        try:
+            self.store.load(path)
+        except Exception as exc:  # noqa: BLE001
+            self.show_error(f"Failed to load test points:\n{exc}")
+            return
+        self.refresh_testpoints_view()
+        self.log_label.set_text(f"Loaded {len(self.store)} test point(s) from {os.path.basename(path)}")
+
+    def on_save_testpoints(self, _w):
+        path = self._choose_save("Save Test Points", "*.json",
+                                 default_name="testpoints.json")
+        if not path:
+            return
+        try:
+            self.store.save(path)
+        except Exception as exc:  # noqa: BLE001
+            self.show_error(f"Failed to save test points:\n{exc}")
+            return
+        self.log_label.set_text(f"Saved {len(self.store)} test point(s) to {os.path.basename(path)}")
+
+    def _choose_file(self, title, pattern):
+        d = Gtk.FileChooserDialog(title=title, parent=self, action=Gtk.FileChooserAction.OPEN, use_header_bar=True)
+        d.add_buttons(Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL,
+                      Gtk.STOCK_OPEN, Gtk.ResponseType.OK)
+        f = Gtk.FileFilter(); f.set_name(pattern); f.add_pattern(pattern); d.add_filter(f)
+        fa = Gtk.FileFilter(); fa.set_name("All files"); fa.add_pattern("*"); d.add_filter(fa)
+        p = d.get_filename() if d.run() == Gtk.ResponseType.OK else None
+        d.destroy()
+        return p
+
+    def _choose_save(self, title, pattern, default_name="file.json"):
+        d = Gtk.FileChooserDialog(title=title, parent=self, action=Gtk.FileChooserAction.SAVE, use_header_bar=True)
+        d.add_buttons(Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL,
+                      Gtk.STOCK_SAVE, Gtk.ResponseType.OK)
+        d.set_do_overwrite_confirmation(True)
+        d.set_current_name(default_name)
+        f = Gtk.FileFilter(); f.set_name(pattern); f.add_pattern(pattern); d.add_filter(f)
+        p = d.get_filename() if d.run() == Gtk.ResponseType.OK else None
+        d.destroy()
+        return p
+
+    # ---- Board loading ----
+    def load_board(self, path):
+        lower = path.lower()
+        try:
+            if lower.endswith(".kicad_pcb"):
+                board = parse_pcb(path)
+            elif lower.endswith(".pcbdoc") or lower.endswith(".prjpcb"):
+                if not HAS_ALTIUM:
+                    self.show_error(
+                        "Altium support requires the 'altium-monkey' package.\n\n"
+                        "Install it with:\n  pip install altium-monkey --break-system-packages\n\n"
+                        "Then restart the application."
+                    )
+                    return
+                board = parse_pcbdoc(path)
+            else:
+                self.show_error(f"Unsupported file extension: {path}\n\n"
+                                "Supported formats: .kicad_pcb, .PcbDoc, .PrjPcb")
+                return
+        except AltiumParserError as exc:
+            self.show_error(f"Altium import failed:\n{exc}")
+            return
+        except Exception as exc:
+            self.show_error(f"Failed to parse board:\n{exc}")
+            return
+        self.board = board
+        self.board_path = path
+        self.viewer.set_board(board)
+        self.refresh_component_list()
+        self.status_project.set_text(f"Board: {os.path.basename(path)}")
+        self.log_label.set_text(
+            f"Loaded {len(board.components)} components, {len(board.tracks)} tracks"
+        )
+        self.clear_inspector()
+        if self.store.load_if_exists(path):
+            self.log_label.set_text(self.log_label.get_text() +
+                                    f" — {len(self.store)} test point(s) loaded")
+        self.refresh_testpoints_view()
+
+
+    def load_pdf(self, path):
+        try:
+            self.pdf_viewer.load(path)
+        except Exception as exc:  # noqa: BLE001
+            self.show_error(f"Failed to open PDF:\n{exc}")
+            return
+        self.bottom_notebook.set_current_page(1)
+
+    # ---- Component list ----
+    def refresh_component_list(self):
+        self.component_store.clear()
+        if not self.board:
+            return
+        for c in self.board.components:
+            self.component_store.append([c.reference, c.value, c.footprint])
+        self.component_filter.refilter()
+
+    def on_search_changed(self, _e): self.component_filter.refilter()
+    def on_filter_changed(self, _c): self.component_filter.refilter()
+
+    def on_tree_selection_changed(self, selection):
+        model, tree_iter = selection.get_selected()
+        if tree_iter is None:
+            return
+        ref = model[tree_iter][0]
+        self.viewer.select_component(ref)
+        self.show_inspector(ref)
+
+    def on_tree_hover(self, widget, event):
+        info = widget.get_path_at_pos(int(event.x), int(event.y))
+        if not info:
+            self.viewer.set_hover(None); return False
+        model = widget.get_model()
+        it = model.get_iter(info[0])
+        self.viewer.set_hover(model[it][0])
+        return False
+
+    def on_tree_leave(self, _w, _e):
+        self.viewer.set_hover(None)
+        return False
+
+    def on_viewer_selected(self, _v, ref):
+        if not ref:
+            self.component_view.get_selection().unselect_all()
+            self.clear_inspector()
+            return
+        model = self.component_view.get_model()
+        for row in model:
+            if row[0] == ref:
+                self.component_view.get_selection().select_iter(row.iter)
+                self.component_view.scroll_to_cell(row.path, None, False, 0, 0)
+                self.show_inspector(ref)
+                break
+
+    def show_inspector(self, ref):
+        if not self.board:
+            self.clear_inspector(); return
+        comp = self.board.find_component(ref)
+        if not comp:
+            self.clear_inspector(); return
+        L = self._inspector_labels
+        L["reference"].set_text(comp.reference)
+        L["value"].set_text(comp.value or "—")
+        L["footprint"].set_text(comp.footprint or "—")
+        L["layer"].set_text(comp.layer or "—")
+        L["position"].set_text(f"({comp.x:.3f}, {comp.y:.3f}) mm")
+        L["rotation"].set_text(f"{comp.rotation:.1f}°")
+        self.pad_store.clear()
+        for p in comp.pads:
+            self.pad_store.append([p.number, p.shape,
+                                   f"{p.width:.2f} × {p.height:.2f} mm",
+                                   ",".join(p.layers) if p.layers else "—",
+                                   p.net or "—"])
+
+    def clear_inspector(self):
+        for lbl in self._inspector_labels.values():
+            lbl.set_text("—")
+        if hasattr(self, "pad_store"):
+            self.pad_store.clear()
+
+    # ---- Test points ----
+    def refresh_testpoints_view(self):
+        self.tp_store.clear()
+        for tp in self.store:
+            _status, reason = evaluate_testpoint(tp)
+            self.tp_store.append([
+                tp.label, tp.reference, tp.pad_number, tp.net,
+                tp.expected_value, tp.actual_value, tp.unit, tp.status,
+                reason, tp.id,
+            ])
+
+    def _selected_tp(self):
+        sel = self.tp_view.get_selection()
+        model, it = sel.get_selected()
+        if it is None:
+            return None
+        return self.store.get(model[it][9])
+
+    def on_tp_selection_changed(self, selection):
+        model, it = selection.get_selected()
+        if it is None:
+            self.viewer.set_marker(None, None)
+            return
+        tp = self.store.get(model[it][9])
+        if tp and tp.x is not None:
+            self.viewer.set_marker(tp.x, tp.y)
+
+    def on_add_testpoint(self, _w):
+        dlg = TestPointDialog(self, self.board)
+        if dlg.run() == Gtk.ResponseType.OK:
+            tp = dlg.build_tp()
+            self.store.add(tp)
+            self.refresh_testpoints_view()
+        dlg.destroy()
+
+    def on_edit_testpoint(self, _w):
+        sel = self._selected_tp()
+        if not sel:
+            self.show_error("Select a test point first.")
+            return
+        dlg = TestPointDialog(self, self.board, tp=sel)
+        if dlg.run() == Gtk.ResponseType.OK:
+            tp = dlg.build_tp()
+            self.store.update(tp)
+            self.refresh_testpoints_view()
+        dlg.destroy()
+
+    def on_delete_testpoint(self, _w):
+        sel = self._selected_tp()
+        if not sel:
+            return
+        if self.store.delete(sel.id):
+            self.refresh_testpoints_view()
+
+    def on_goto_testpoint(self, _w):
+        sel = self._selected_tp()
+        if not sel:
+            return
+        if sel.x is None or sel.y is None:
+            self.show_error("This test point has no board coordinates.")
+            return
+        self.viewer.set_marker(sel.x, sel.y)
+        self.viewer.pan_to(sel.x, sel.y)
+
+    def on_add_tp_from_inspector(self, _w):
+        sel = self.pad_view.get_selection()
+        model, it = sel.get_selected()
+        if it is None:
+            self.show_error("Select a pad in the Inspector first.")
+            return
+        ref = self._inspector_labels["reference"].get_text()
+        pad = model[it][0]
+        net = model[it][4] if model[it][4] != "—" else ""
+        dlg = TestPointDialog(self, self.board, preset_ref=ref, preset_pad=pad, preset_net=net)
+        if dlg.run() == Gtk.ResponseType.OK:
+            tp = dlg.build_tp()
+            self.store.add(tp)
+            self.refresh_testpoints_view()
+        dlg.destroy()
+
+    # ---- Auto-evaluate / Suggest ----
+    def on_auto_evaluate(self, _w):
+        if not len(self.store):
+            self.show_error("No test points to evaluate.")
+            return
+        for tp in self.store:
+            status, _reason = evaluate_testpoint(tp)
+            tp.status = status
+        self.refresh_testpoints_view()
+        counts = summarize_results(self.store.all())
+        summary = (
+            f"Evaluated {len(self.store)} test point(s): "
+            f"{counts[STATUS_PASS]} pass, {counts[STATUS_FAIL]} fail, "
+            f"{counts[STATUS_UNKNOWN]} unknown, "
+            f"{counts[STATUS_NOT_TESTED]} not tested."
+        )
+        self.log_label.set_text(summary)
+
+    def on_suggest_for_component(self, _w):
+        if not self.board:
+            self.show_error("Open a board first.")
+            return
+        # Determine the currently selected component (inspector or tree)
+        ref = self._inspector_labels["reference"].get_text()
+        if not ref or ref == "—":
+            self.show_error("Select a component first.")
+            return
+        suggestions = suggest_testpoints_for_component(self.board, ref)
+        if not suggestions:
+            self.show_error(f"No pads found for {ref}.")
+            return
+        for tp in suggestions:
+            self.store.add(tp)
+        self.refresh_testpoints_view()
+        self.log_label.set_text(
+            f"Added {len(suggestions)} suggested test point(s) for {ref}. "
+            f"Fill in the expected values."
+        )
+
+    # ---- AI Chat ----
+    def on_ai_config(self, _w):
+        dlg = Gtk.Dialog(title="AI Settings", transient_for=self, modal=True, use_header_bar=True)
+        dlg.add_buttons(Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL, Gtk.STOCK_OK, Gtk.ResponseType.OK)
+        grid = Gtk.Grid(row_spacing=6, column_spacing=12, margin=12)
+        dlg.get_content_area().add(grid)
+
+        model_entry = Gtk.Entry(text=self.ollama_client.model)
+        host_entry = Gtk.Entry(text=self.ollama_client.host)
+
+        grid.attach(Gtk.Label(label="Ollama URL:", xalign=0), 0, 0, 1, 1)
+        grid.attach(host_entry, 1, 0, 1, 1)
+        grid.attach(Gtk.Label(label="Model Name:", xalign=0), 0, 1, 1, 1)
+        grid.attach(model_entry, 1, 1, 1, 1)
+
+        dlg.show_all()
+        if dlg.run() == Gtk.ResponseType.OK:
+            self.ollama_client.host = host_entry.get_text().strip()
+            self.ollama_client.model = model_entry.get_text().strip()
+            self.append_chat("System", f"AI configured to use {self.ollama_client.model} at {self.ollama_client.host}.", "#4DA3FF")
+        dlg.destroy()
+
+    def append_chat(self, sender, text, color="#F1F5F9"):
+        end_iter = self.chat_buffer.get_end_iter()
+        tag = self.chat_buffer.create_tag(None, foreground=color, weight=700 if sender != "AI" else 400)
+        self.chat_buffer.insert_with_tags(end_iter, f"[{sender}]\n", tag)
+
+        end_iter = self.chat_buffer.get_end_iter()
+        tag_body = self.chat_buffer.create_tag(None, foreground="#F1F5F9")
+        self.chat_buffer.insert_with_tags(end_iter, f"{text}\n\n", tag_body)
+
+        # Scroll to bottom
+        self.chat_view.scroll_to_iter(self.chat_buffer.get_end_iter(), 0.0, False, 0, 0)
+
+    def on_ai_send(self, _w):
+        text = self.ai_entry.get_text().strip()
+        if not text:
+            return
+        self.ai_entry.set_text("")
+        self.append_chat("You", text, "#00D1B2")
+
+        self.btn_ai_send.set_sensitive(False)
+        self.btn_ai_send.set_label("Thinking…")
+        self.append_chat("System", "Analyzing board and measurements…", "#94A3B8")
+
+        def on_result(res):
+            # This callback is invoked from the background thread; use GLib.idle_add to safely update UI
+            from gi.repository import GLib
+            GLib.idle_add(self._handle_ai_response, res)
+
+        ask_ai_async(self.ollama_client, text, self.board, self.store, on_result)
+
+    def _handle_ai_response(self, res):
+        self.btn_ai_send.set_sensitive(True)
+        self.btn_ai_send.set_label("Send")
+
+        if "error" in res:
+            self.append_chat("Error", res["error"], "#9b2226")
+            return
+
+        data = res["data"]
+        msg = data.get("message", "No message.")
+        suspects = data.get("suspect_components", [])
+        tests = data.get("suggested_tests", [])
+
+        full_reply = msg
+        if tests:
+            full_reply += "\n\nSuggested Tests:\n- " + "\n- ".join(tests)
+
+        self.append_chat("AI", full_reply, "#F1F5F9")
+
+        # Auto-highlight suspect components
+        if suspects and self.board:
+            valid_refs = []
+            for ref in suspects:
+                if self.board.find_component(ref):
+                    valid_refs.append(ref)
+                else:
+                    self.append_chat("System", f"AI mentioned unknown component: {ref}", "#a07600")
+
+            if valid_refs:
+                # If multiple, just highlight the first one for now, or we can add multi-highlight support later.
+                # For now, let's select the first one.
+                first_ref = valid_refs[0]
+                self.viewer.select_component(first_ref)
+                self.on_viewer_selected(self.viewer, first_ref)
+                self.append_chat("System", f"Highlighted {first_ref} on the board.", "#4DA3FF")
+
+        return False # Remove from idle queue
+
+    # ---- Misc ----
+    def on_fit_view(self, _w):
+        self.viewer.fit_to_view(); self.viewer.queue_draw()
+
+    def on_settings(self, _w):
+        dlg = Gtk.Dialog(title="Application Settings", transient_for=self, modal=True)
+        dlg.add_buttons(Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL,
+                        Gtk.STOCK_OK, Gtk.ResponseType.OK)
+        grid = Gtk.Grid(row_spacing=6, column_spacing=12, margin=12)
+        dlg.get_content_area().add(grid)
+        name_entry = Gtk.Entry(text=APP_NAME)
+        sub_entry = Gtk.Entry(text=APP_SUBTITLE)
+        grid.attach(Gtk.Label(label="Application name:", xalign=0), 0, 0, 1, 1)
+        grid.attach(name_entry, 1, 0, 1, 1)
+        grid.attach(Gtk.Label(label="Subtitle:", xalign=0), 0, 1, 1, 1)
+        grid.attach(sub_entry, 1, 1, 1, 1)
+        dlg.show_all()
+        if dlg.run() == Gtk.ResponseType.OK:
+            name = name_entry.get_text().strip() or APP_NAME
+            sub = sub_entry.get_text().strip()
+            self.set_title(f"{name} — {sub}" if sub else name)
+        dlg.destroy()
+
+    def on_about(self, _w):
+        d = Gtk.AboutDialog(transient_for=self, modal=True)
+        d.set_program_name(APP_NAME); d.set_version(APP_VERSION); d.set_comments(APP_SUBTITLE)
+        d.run(); d.destroy()
+
+    def show_error(self, message):
+        d = Gtk.MessageDialog(transient_for=self, modal=True,
+                              message_type=Gtk.MessageType.ERROR,
+                              buttons=Gtk.ButtonsType.OK, text=message)
+        d.run(); d.destroy()
+
+    def on_quit(self, _w):
+        self.destroy()
+
+
+class App(Gtk.Application):
+    def __init__(self):
+        super().__init__(application_id="io.github.draxx.pcbanalyzer")
+
+    def do_activate(self):
+        w = self.get_active_window()
+        if not w:
+            w = MainWindow(self)
+        w.show_all()
+
+    def do_startup(self):
+        Gtk.Application.do_startup(self)
+        p = Gtk.CssProvider()
+        p.load_from_data(APP_CSS.encode("utf-8"))
+        Gtk.StyleContext.add_provider_for_screen(
+            Gdk.Screen.get_default(), p, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+
+
+def main():
+    App().run(None)
+
+
+if __name__ == "__main__":
+    main()
