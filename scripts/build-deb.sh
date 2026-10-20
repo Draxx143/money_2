@@ -35,6 +35,7 @@ install -m 644 "$ROOT/packaging/pcb-analyzer.desktop" \
 for f in "$ROOT"/src/pcb_analyzer/*.py; do
     install -m 644 "$f" "$STAGING/usr/share/pcb-analyzer/src/pcb_analyzer/"
 done
+install -m 644 "$ROOT/VERSION" "$STAGING/usr/share/pcb-analyzer/VERSION"
 install -m 644 "$ROOT/tests/fixtures/PCB_PCB_test_pcb_2_2026-10-20.json" \
     "$STAGING/usr/share/pcb-analyzer/examples/PCB_PCB_test_pcb_2_2026-10-20.json"
 
