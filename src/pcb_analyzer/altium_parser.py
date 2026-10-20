@@ -24,12 +24,21 @@ class AltiumParserError(Exception):
 
 def parse_pcbdoc(path: str) -> Board:
     """Parse an Altium .PcbDoc (or .PrjPcb) and return a Board."""
-    if not HAS_ALTIUM:
-        raise AltiumParserError(
-            "altium-monkey is not installed. Run: pip install altium-monkey --break-system-packages"
-        )
     if not os.path.isfile(path):
         raise AltiumParserError(f"File not found: {path}")
+
+    # Altium ASCII exports are often given a .PcbDoc suffix. They can be read
+    # without altium-monkey; binary OLE PcbDoc files still use the library.
+    with open(path, "rb") as source:
+        header = source.read(128)
+    if header.lstrip().startswith(b"|RECORD="):
+        return _parse_ascii_pcbdoc(path)
+
+    if not HAS_ALTIUM:
+        raise AltiumParserError(
+            "altium-monkey is required for binary Altium PcbDoc files. "
+            "Install altium-monkey or export the board as Altium ASCII."
+        )
 
     lower = path.lower()
 
@@ -74,6 +83,147 @@ def parse_pcbdoc(path: str) -> Board:
 
     else:
         raise AltiumParserError("Unsupported Altium file. Expected .PcbDoc or .PrjPcb")
+
+
+def _parse_ascii_pcbdoc(path: str) -> Board:
+    """Parse Altium's pipe-delimited ASCII board export."""
+    board = Board(version="altium-ascii")
+    components_by_id = {}
+    net_names = {}
+    tracks = []
+    pads = []
+    text_values = {}
+
+    try:
+        with open(path, "r", encoding="utf-8-sig", errors="replace") as source:
+            lines = source
+            for line in lines:
+                if not line.startswith("|RECORD="):
+                    continue
+                fields = {}
+                for field in line.rstrip("\r\n").split("|")[1:]:
+                    key, separator, value = field.partition("=")
+                    if separator:
+                        fields[key.upper()] = value
+                record = fields.get("RECORD", "").lower()
+
+                if record == "net":
+                    net_names[fields.get("ID", "")] = fields.get("NAME", "")
+                elif record == "component":
+                    cid = fields.get("ID", "")
+                    if not cid:
+                        continue
+                    component = Component(
+                        reference=fields.get("SOURCEDESIGNATOR", cid),
+                        value="",
+                        footprint=fields.get("PATTERN", ""),
+                        x=_ascii_mm(fields.get("X")),
+                        y=_ascii_mm(fields.get("Y")),
+                        rotation=_ascii_float(fields.get("ROTATION")),
+                        layer=_ascii_layer(fields.get("LAYER", "TOP")),
+                    )
+                    components_by_id[cid] = component
+                    board.components.append(component)
+                elif record == "text" and fields.get("COMPONENT") is not None:
+                    cid = fields["COMPONENT"]
+                    if fields.get("COMMENT", "").upper() == "TRUE":
+                        text_values[cid] = _decode_widestring(fields.get("WIDESTRING", ""))
+                    elif fields.get("DESIGNATOR", "").upper() == "TRUE":
+                        if cid in components_by_id:
+                            components_by_id[cid].reference = _decode_widestring(
+                                fields.get("WIDESTRING", "")
+                            ) or components_by_id[cid].reference
+                elif record == "pad":
+                    pads.append(fields)
+                elif record == "track":
+                    if fields.get("POLYGONOUTLINE", "FALSE").upper() == "TRUE":
+                        board.outline.segments.append((
+                            _ascii_mm(fields.get("X1")), _ascii_mm(fields.get("Y1")),
+                            _ascii_mm(fields.get("X2")), _ascii_mm(fields.get("Y2")),
+                        ))
+                    elif all(key in fields for key in ("X1", "Y1", "X2", "Y2")):
+                        tracks.append(fields)
+    except OSError as exc:
+        raise AltiumParserError(f"Could not read Altium ASCII board: {exc}") from exc
+
+    if not board.components and not tracks and not pads:
+        raise AltiumParserError("File is not a supported Altium ASCII PCB export")
+
+    for cid, value in text_values.items():
+        if cid in components_by_id:
+            components_by_id[cid].value = value
+
+    for fields in pads:
+        component = components_by_id.get(fields.get("COMPONENT", ""))
+        if component is None:
+            continue
+        width = _ascii_mm(fields.get("XSIZE"))
+        height = _ascii_mm(fields.get("YSIZE"))
+        component.pads.append(Pad(
+            number=fields.get("NAME", ""),
+            x=_ascii_mm(fields.get("X")) - component.x,
+            y=_ascii_mm(fields.get("Y")) - component.y,
+            width=width,
+            height=height,
+            shape=_ascii_pad_shape(fields.get("SHAPE", "")),
+            layers=[_ascii_layer(fields.get("LAYER", "TOP"))],
+            net=net_names.get(fields.get("NET", "")),
+        ))
+
+    board.tracks.extend(Track(
+        start_x=_ascii_mm(item.get("X1")),
+        start_y=_ascii_mm(item.get("Y1")),
+        end_x=_ascii_mm(item.get("X2")),
+        end_y=_ascii_mm(item.get("Y2")),
+        width=_ascii_mm(item.get("WIDTH")),
+        layer=_ascii_layer(item.get("LAYER", "TOP")),
+    ) for item in tracks)
+    board.layers = sorted({item.layer for item in board.tracks} | {
+        pad.layers[0] for component in board.components for pad in component.pads
+    })
+    return board
+
+
+def _ascii_mm(value: Optional[str]) -> float:
+    """Convert an Altium ASCII dimension (normally mils) to millimetres."""
+    if not value:
+        return 0.0
+    text = value.strip()
+    try:
+        if text.lower().endswith("mil"):
+            return float(text[:-3]) * 0.0254
+        if text.lower().endswith("mm"):
+            return float(text[:-2])
+        return float(text) * 0.0254
+    except ValueError:
+        return 0.0
+
+
+def _ascii_float(value: Optional[str]) -> float:
+    try:
+        return float(value or 0)
+    except ValueError:
+        return 0.0
+
+
+def _ascii_layer(name: str) -> str:
+    return {"TOP": "F.Cu", "BOTTOM": "B.Cu"}.get(name.upper(), name)
+
+
+def _ascii_pad_shape(shape: str) -> str:
+    normalized = shape.upper()
+    if "ROUND" in normalized or "CIRCLE" in normalized:
+        return "circle"
+    if "OVAL" in normalized:
+        return "oval"
+    return "rect"
+
+
+def _decode_widestring(value: str) -> str:
+    try:
+        return "".join(chr(int(code)) for code in value.split(",") if code)
+    except (ValueError, OverflowError):
+        return ""
 
 
 def _find_sibling_project(pcbdoc_path: str) -> Optional[str]:

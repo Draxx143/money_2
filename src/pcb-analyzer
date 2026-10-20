@@ -34,7 +34,7 @@ from pcb_analyzer.ai_agent import OllamaClient, ask_ai_async
 
 APP_NAME = "PCB Analyzer"
 APP_SUBTITLE = "Analysis & Diagnostics Workbench"
-APP_VERSION = "0.5.0"
+APP_VERSION = "0.6.0"
 
 BG_MAIN = "#0B0F14"
 BG_PANEL = "#121923"
