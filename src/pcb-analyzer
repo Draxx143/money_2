@@ -36,7 +36,7 @@ from pcb_analyzer.easyeda_parser import parse_easyeda_json
 
 APP_NAME = "PCB Analyzer"
 APP_SUBTITLE = "Analysis & Diagnostics Workbench"
-APP_VERSION = "0.6.21"
+APP_VERSION = "0.6.22"
 
 BG_MAIN = "#0B0F14"
 BG_PANEL = "#121923"
@@ -378,8 +378,8 @@ class MainWindow(Gtk.ApplicationWindow):
         layer_button.set_size_request(34, 34)
         layer_button.get_style_context().add_class("layer-menu-button")
         palette.pack_start(layer_button, False, False, 0)
+        # MenuButton owns the popover anchor; do not set a second relative widget.
         self.layer_popover = Gtk.Popover()
-        self.layer_popover.set_relative_to(layer_button)
         self.layer_popover.set_size_request(238, 300)
         self.layer_popover.get_style_context().add_class("layers-popover")
         popover_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
