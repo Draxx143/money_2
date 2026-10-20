@@ -45,6 +45,9 @@ class PcbViewer(Gtk.DrawingArea):
         self.grid_visible = True
         self.zones_visible = True
         self.measure_points = []
+        self.measurements = []
+        self.measure_cursor = None
+        self.snap_points = []
 
         self.set_can_focus(True)
         self.add_events(
@@ -65,7 +68,41 @@ class PcbViewer(Gtk.DrawingArea):
         if mode not in ("select", "pan", "measure"):
             return
         self.tool_mode = mode
+        self.measure_points.clear()
+        self.measure_cursor = None
         self.queue_draw()
+
+    def _build_snap_points(self):
+        """Cache snap targets for precise ruler endpoints (pads, tracks, edges)."""
+        points = []
+        board = self.board
+        if not board:
+            self.snap_points = points
+            return
+        bounds = board.bounds()
+        if bounds:
+            x1, y1, x2, y2 = bounds
+            points.extend(((x1, y1), (x1, y2), (x2, y1), (x2, y2)))
+        for x1, y1, x2, y2 in board.outline.segments:
+            points.extend(((x1, y1), (x2, y2)))
+        for track in board.tracks:
+            points.extend(((track.start_x, track.start_y), (track.end_x, track.end_y)))
+        for component in board.components:
+            points.append((component.x, component.y))
+            points.extend((component.x + pad.x, component.y + pad.y) for pad in component.pads)
+        self.snap_points = list(dict.fromkeys(points))
+
+    def _snap_measure_point(self, px, py):
+        """Snap within 12 screen pixels to a known PCB feature."""
+        nearest = None
+        nearest_d2 = 12.0 ** 2
+        for x, y in self.snap_points:
+            sx, sy = self.mm_to_px(x, y)
+            d2 = (sx - px) ** 2 + (sy - py) ** 2
+            if d2 <= nearest_d2:
+                nearest_d2 = d2
+                nearest = (x, y)
+        return nearest if nearest is not None else self.px_to_mm(px, py)
 
     def zoom_by(self, factor):
         alloc = self.get_allocation()
@@ -88,6 +125,9 @@ class PcbViewer(Gtk.DrawingArea):
     def set_board(self, board: Board):
         self.board = board
         self.measure_points.clear()
+        self.measurements.clear()
+        self.measure_cursor = None
+        self._build_snap_points()
         self.selected_ref = None
         self.hover_ref = None
         self.fit_to_view()
@@ -291,25 +331,75 @@ class PcbViewer(Gtk.DrawingArea):
             cr.move_to(mx, my - 14); cr.line_to(mx, my + 14)
             cr.stroke()
 
-        # Measurement tool: show a two-point distance directly on the canvas.
-        if len(self.measure_points) == 2:
-            (x1, y1), (x2, y2) = self.measure_points
-            px1, py1 = self.mm_to_px(x1, y1)
-            px2, py2 = self.mm_to_px(x2, y2)
-            distance = math.hypot(x2 - x1, y2 - y1)
-            cr.set_source_rgb(1.0, 0.82, 0.20)
-            cr.set_line_width(2.0)
-            cr.move_to(px1, py1); cr.line_to(px2, py2); cr.stroke()
-            for px, py in ((px1, py1), (px2, py2)):
-                cr.arc(px, py, 4, 0, 2 * math.pi); cr.fill()
-            cr.move_to((px1 + px2) / 2 + 6, (py1 + py2) / 2 - 6)
-            cr.show_text(f"{distance:.3f} mm")
+        # CAD-style dimensions: extension lines, inward arrowheads, rotated
+        # value text, persistent completed measurements, and live preview.
+        dimensions = list(self.measurements)
+        if self.measure_points and self.measure_cursor:
+            dimensions.append((self.measure_points[0], self.measure_cursor, True))
+        for item in dimensions:
+            (x1, y1), (x2, y2), *preview_flag = item
+            preview = bool(preview_flag and preview_flag[0])
+            self._draw_dimension(cr, (x1, y1), (x2, y2), preview)
 
         # Coordinate readout
         cr.set_source_rgb(0.58, 0.64, 0.71)
         cr.set_font_size(11)
         cr.move_to(10, alloc.height - 10)
         cr.show_text(f"Scale: {self.scale:.2f} px/mm")
+
+    def _draw_dimension(self, cr, start, end, preview=False):
+        """Draw an engineering dimension annotation in screen space."""
+        x1, y1 = self.mm_to_px(*start)
+        x2, y2 = self.mm_to_px(*end)
+        dx, dy = x2 - x1, y2 - y1
+        screen_length = math.hypot(dx, dy)
+        if screen_length < 2:
+            return
+        ux, uy = dx / screen_length, dy / screen_length
+        nx, ny = -uy, ux
+        color = (0.98, 0.75, 0.20) if preview else (0.98, 0.88, 0.52)
+        cr.save()
+        cr.set_source_rgba(*color, 0.95 if not preview else 0.72)
+        cr.set_line_width(1.35)
+        cr.set_line_cap(1)
+        # Short extension lines beyond both measured points.
+        ext = 7.0
+        cr.move_to(x1 - nx * ext, y1 - ny * ext)
+        cr.line_to(x1 + nx * ext, y1 + ny * ext)
+        cr.move_to(x2 - nx * ext, y2 - ny * ext)
+        cr.line_to(x2 + nx * ext, y2 + ny * ext)
+        cr.stroke()
+        # Dimension line and two inward-facing arrowheads.
+        cr.move_to(x1, y1); cr.line_to(x2, y2); cr.stroke()
+        arrow = min(7.0, screen_length * 0.22)
+        for x, y, direction in ((x1, y1, 1), (x2, y2, -1)):
+            bx, by = x + ux * arrow * direction, y + uy * arrow * direction
+            wing = 2.8
+            cr.move_to(x, y)
+            cr.line_to(bx + nx * wing, by + ny * wing)
+            cr.move_to(x, y)
+            cr.line_to(bx - nx * wing, by - ny * wing)
+        cr.stroke()
+        # Rotated label follows the dimension line, kept upright for readability.
+        angle = math.atan2(dy, dx)
+        if angle > math.pi / 2 or angle < -math.pi / 2:
+            angle += math.pi
+        length_mm = math.hypot(end[0] - start[0], end[1] - start[1])
+        label = f"{length_mm:.3f} mm"
+        mx, my = (x1 + x2) / 2 + nx * 10, (y1 + y2) / 2 + ny * 10
+        cr.translate(mx, my)
+        cr.rotate(angle)
+        cr.select_font_face("Sans", 0, 0)
+        cr.set_font_size(12)
+        extents = cr.text_extents(label)
+        cr.set_source_rgb(0.0, 0.0, 0.0)
+        cr.rectangle(-extents.width / 2 - 3, -extents.height / 2 - 2,
+                     extents.width + 6, extents.height + 4)
+        cr.fill()
+        cr.set_source_rgba(*color, 1.0)
+        cr.move_to(-extents.width / 2, extents.height / 2)
+        cr.show_text(label)
+        cr.restore()
 
     def _draw_grid(self, cr, width, height):
         """Draw a subtle scale-aware drafting grid behind the board artwork."""
@@ -390,10 +480,18 @@ class PcbViewer(Gtk.DrawingArea):
             self._dragging = True
             self._drag_last = (event.x, event.y)
         elif event.button == 1 and self.tool_mode == "measure":
-            point = self.px_to_mm(event.x, event.y)
-            if len(self.measure_points) >= 2:
-                self.measure_points = []
-            self.measure_points.append(point)
+            point = self._snap_measure_point(event.x, event.y)
+            if not self.measure_points:
+                self.measure_points = [point]
+            else:
+                self.measurements.append((self.measure_points[0], point))
+                self.measure_points.clear()
+            self.measure_cursor = point
+            self.queue_draw()
+        elif event.button == 3 and self.tool_mode == "measure":
+            self.measurements.clear()
+            self.measure_points.clear()
+            self.measure_cursor = None
             self.queue_draw()
         elif event.button == 2:
             self._dragging = True
@@ -405,6 +503,9 @@ class PcbViewer(Gtk.DrawingArea):
         return True
 
     def _on_motion(self, widget, event):
+        if self.tool_mode == "measure" and self.measure_points:
+            self.measure_cursor = self._snap_measure_point(event.x, event.y)
+            self.queue_draw()
         if self._dragging:
             dx = event.x - self._drag_last[0]
             dy = event.y - self._drag_last[1]

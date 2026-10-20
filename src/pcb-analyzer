@@ -36,7 +36,7 @@ from pcb_analyzer.easyeda_parser import parse_easyeda_json
 
 APP_NAME = "PCB Analyzer"
 APP_SUBTITLE = "Analysis & Diagnostics Workbench"
-APP_VERSION = "0.6.14"
+APP_VERSION = "0.6.15"
 
 BG_MAIN = "#0B0F14"
 BG_PANEL = "#121923"
@@ -345,7 +345,7 @@ class MainWindow(Gtk.ApplicationWindow):
 
         self.select_tool_button = tool_button("select", "Select component", "select", True)
         self.pan_tool_button = tool_button("pan", "Pan canvas", "pan", True)
-        self.measure_tool_button = tool_button("measure", "Measure distance: click two points", "measure", True)
+        self.measure_tool_button = tool_button("measure", "Measure: click two snapped points; right-click clears dimensions", "measure", True)
         self.select_tool_button.set_active(True)
         palette.pack_start(Gtk.Separator(orientation=Gtk.Orientation.VERTICAL), False, False, 3)
         for icon, tip, callback in (
