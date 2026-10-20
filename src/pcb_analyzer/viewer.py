@@ -41,6 +41,10 @@ class PcbViewer(Gtk.DrawingArea):
         self.marker = None          # (x_mm, y_mm) or None
         self._dragging = False
         self._drag_last = (0.0, 0.0)
+        self.tool_mode = "select"
+        self.grid_visible = True
+        self.zones_visible = True
+        self.measure_points = []
 
         self.set_can_focus(True)
         self.add_events(
@@ -57,8 +61,33 @@ class PcbViewer(Gtk.DrawingArea):
         self.connect("motion-notify-event", self._on_motion)
 
     # ---- Public API ----
+    def set_tool_mode(self, mode):
+        if mode not in ("select", "pan", "measure"):
+            return
+        self.tool_mode = mode
+        self.queue_draw()
+
+    def zoom_by(self, factor):
+        alloc = self.get_allocation()
+        cx, cy = alloc.width / 2, alloc.height / 2
+        wx, wy = self.px_to_mm(cx, cy)
+        self.scale = max(min(self.scale * factor, 200.0), 0.1)
+        view_y = self._vertical_axis_sum() - wy if self.flip_vertical else wy
+        self.offset_x = cx - wx * self.scale
+        self.offset_y = cy - view_y * self.scale
+        self.queue_draw()
+
+    def toggle_grid(self, visible):
+        self.grid_visible = bool(visible)
+        self.queue_draw()
+
+    def toggle_zones(self, visible):
+        self.zones_visible = bool(visible)
+        self.queue_draw()
+
     def set_board(self, board: Board):
         self.board = board
+        self.measure_points.clear()
         self.selected_ref = None
         self.hover_ref = None
         self.fit_to_view()
@@ -138,11 +167,12 @@ class PcbViewer(Gtk.DrawingArea):
             cr.show_text("Open a KiCad .kicad_pcb file to view a board.")
             return
 
-        self._draw_grid(cr, alloc.width, alloc.height)
+        if self.grid_visible:
+            self._draw_grid(cr, alloc.width, alloc.height)
 
         # Copper pours/zones sit beneath tracks and pads. The Altium ASCII
         # exporter supplies their filled polygon contours as Region records.
-        for zone in getattr(self.board, "zones", []):
+        for zone in getattr(self.board, "zones", []) if self.zones_visible else []:
             if len(zone.points) < 3:
                 continue
             zone_color = LAYER_COLORS.get(zone.layer, (0.0, 0.0, 1.0))
@@ -261,6 +291,20 @@ class PcbViewer(Gtk.DrawingArea):
             cr.move_to(mx, my - 14); cr.line_to(mx, my + 14)
             cr.stroke()
 
+        # Measurement tool: show a two-point distance directly on the canvas.
+        if len(self.measure_points) == 2:
+            (x1, y1), (x2, y2) = self.measure_points
+            px1, py1 = self.mm_to_px(x1, y1)
+            px2, py2 = self.mm_to_px(x2, y2)
+            distance = math.hypot(x2 - x1, y2 - y1)
+            cr.set_source_rgb(1.0, 0.82, 0.20)
+            cr.set_line_width(2.0)
+            cr.move_to(px1, py1); cr.line_to(px2, py2); cr.stroke()
+            for px, py in ((px1, py1), (px2, py2)):
+                cr.arc(px, py, 4, 0, 2 * math.pi); cr.fill()
+            cr.move_to((px1 + px2) / 2 + 6, (py1 + py2) / 2 - 6)
+            cr.show_text(f"{distance:.3f} mm")
+
         # Coordinate readout
         cr.set_source_rgb(0.58, 0.64, 0.71)
         cr.set_font_size(11)
@@ -337,20 +381,20 @@ class PcbViewer(Gtk.DrawingArea):
         return True
 
     def _on_button_press(self, widget, event):
-        if event.button == 1:
-            # selection
+        if event.button == 1 and self.tool_mode == "select":
             ref = self._hit_test(event.x, event.y)
-            if ref:
-                self.selected_ref = ref
-                self.emit("component-selected", ref)
-                self.queue_draw()
-            else:
-                self.selected_ref = None
-                self.emit("component-selected", None)
-                self.queue_draw()
-            # begin pan drag
+            self.selected_ref = ref
+            self.emit("component-selected", ref)
+            self.queue_draw()
+        elif event.button == 1 and self.tool_mode == "pan":
             self._dragging = True
             self._drag_last = (event.x, event.y)
+        elif event.button == 1 and self.tool_mode == "measure":
+            point = self.px_to_mm(event.x, event.y)
+            if len(self.measure_points) >= 2:
+                self.measure_points = []
+            self.measure_points.append(point)
+            self.queue_draw()
         elif event.button == 2:
             self._dragging = True
             self._drag_last = (event.x, event.y)

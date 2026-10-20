@@ -36,7 +36,7 @@ from pcb_analyzer.easyeda_parser import parse_easyeda_json
 
 APP_NAME = "PCB Analyzer"
 APP_SUBTITLE = "Analysis & Diagnostics Workbench"
-APP_VERSION = "0.6.11"
+APP_VERSION = "0.6.12"
 
 BG_MAIN = "#0B0F14"
 BG_PANEL = "#121923"
@@ -305,13 +305,68 @@ class MainWindow(Gtk.ApplicationWindow):
 
         self.viewer = PcbViewer()
         self.viewer.connect("component-selected", self.on_viewer_selected)
-        hpaned.pack1(self.viewer, resize=True, shrink=False)
+        viewer_shell = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
+        viewer_shell.pack_start(self.build_viewer_tools(), False, False, 0)
+        viewer_shell.pack_start(self.viewer, True, True, 0)
+        hpaned.pack1(viewer_shell, resize=True, shrink=False)
         hpaned.pack2(self.build_right_panels(), resize=False, shrink=False)
 
         inner.pack_start(self.build_bottom_notebook(), True, True, 0)
         vbox.pack_start(self.build_statusbar(), False, False, 0)
 
     # ---- Menus / toolbar ----
+    def build_viewer_tools(self):
+        """Compact drafting palette beside the board, similar to PCB editors."""
+        palette = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        palette.set_size_request(48, -1)
+        palette.get_style_context().add_class("toolbar")
+        palette.set_border_width(4)
+
+        def tool(label, tooltip, mode):
+            button = Gtk.ToggleButton(label=label)
+            button.set_tooltip_text(tooltip)
+            button.set_size_request(38, 34)
+            button.connect("toggled", self.on_viewer_tool_toggled, mode)
+            palette.pack_start(button, False, False, 0)
+            return button
+
+        self.select_tool_button = tool("↖", "Select component", "select")
+        self.pan_tool_button = tool("✋", "Pan board", "pan")
+        self.measure_tool_button = tool("↔", "Measure distance (click two points)", "measure")
+        self.select_tool_button.set_active(True)
+        for label, tip, callback in (
+            ("＋", "Zoom in", lambda: self.viewer.zoom_by(1.25)),
+            ("－", "Zoom out", lambda: self.viewer.zoom_by(0.8)),
+            ("⌂", "Fit board to view", self.viewer.fit_to_view),
+        ):
+            button = Gtk.Button(label=label)
+            button.set_tooltip_text(tip)
+            button.set_size_request(38, 34)
+            button.connect("clicked", lambda _b, cb=callback: (cb(), self.viewer.queue_draw()))
+            palette.pack_start(button, False, False, 0)
+
+        palette.pack_start(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL), False, False, 3)
+        grid = Gtk.ToggleButton(label="#")
+        grid.set_active(True)
+        grid.set_tooltip_text("Show or hide grid")
+        grid.connect("toggled", lambda button: self.viewer.toggle_grid(button.get_active()))
+        palette.pack_start(grid, False, False, 0)
+        zones = Gtk.ToggleButton(label="◩")
+        zones.set_active(True)
+        zones.set_tooltip_text("Show or hide copper zones")
+        zones.connect("toggled", lambda button: self.viewer.toggle_zones(button.get_active()))
+        palette.pack_start(zones, False, False, 0)
+        palette.show_all()
+        return palette
+
+    def on_viewer_tool_toggled(self, button, mode):
+        if not button.get_active():
+            return
+        for candidate in (self.select_tool_button, self.pan_tool_button, self.measure_tool_button):
+            if candidate is not button:
+                candidate.set_active(False)
+        self.viewer.set_tool_mode(mode)
+
     def build_menubar(self):
         menubar = Gtk.MenuBar()
 
