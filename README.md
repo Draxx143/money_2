@@ -38,7 +38,7 @@ pcb-analyzer /usr/share/pcb-analyzer/examples/PCB_PCB_test_pcb_2_2026-10-20.json
 python3 src/pcb-analyzer
 ```
 
-GTK 3 and Poppler GI bindings must be installed on the host. Altium parsing additionally requires a compatible `altium-monkey` installation; this library is not bundled in the Debian package.
+GTK 3 and Poppler GI bindings must be installed on the host. Altium parsing is optional and requires a compatible `altium-monkey` installation (for example, install it with `python3 -m pip install altium-monkey` in the Python environment used to launch the app); this library is not bundled in the Debian package.
 
 ## Tests
 

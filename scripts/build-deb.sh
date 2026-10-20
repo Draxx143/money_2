@@ -21,7 +21,7 @@ Section: electronics
 Priority: optional
 Architecture: all
 Maintainer: Draxx <draxx@localhost>
-Depends: python3, python3-gi, gir1.2-gtk-3.0, gir1.2-poppler-0.18
+Depends: python3, python3-gi, python3-gi-cairo, gir1.2-gtk-3.0, gir1.2-poppler-0.18
 Description: Professional PCB Analysis & AI Diagnostics Workbench
  A GTK 3 desktop application for PCB analysis, component navigation,
  test-point management, and AI-assisted diagnostics.
