@@ -46,11 +46,14 @@ class TestParser(unittest.TestCase):
               (layers "*.Cu") (net 1 "GND")))
           (segment (start 0 0) (end 1 1) (width 0.2) (layer "B.Cu") (net 1))
           (via (at 4 5) (size 0.8) (drill 0.4) (layers "F.Cu" "B.Cu") (net 1))
-          (gr_circle (center 0 0) (end 2 0) (layer "Edge.Cuts")))'''
+          (gr_circle (center 0 0) (end 2 0) (layer "Edge.Cuts"))
+          (zone (net 1) (layer "B.Cu") (filled_polygon (pts (xy 0 0) (xy 1 0) (xy 1 1)))) )'''
         board = parse_pcb_text(text)
         self.assertEqual(board.components[0].reference, "Q1")
         self.assertEqual(board.components[0].pads[0].hole_diameter, 0.8)
         self.assertEqual(board.components[0].pads[0].rotation, 45)
+        self.assertEqual(board.components[0].pads[0].net, "GND")
+        self.assertEqual(len(board.zones), 1)
         self.assertEqual(board.tracks[0].net, "GND")
         self.assertEqual(board.vias[0].net, "GND")
         self.assertGreater(len(board.outline.segments), 60)

@@ -3,7 +3,7 @@ import re
 import math
 from typing import List, Union
 
-from .model import Board, Component, Pad, Track, Via
+from .model import Board, BoardZone, Component, Pad, Track, Via
 
 
 class SexpError(ValueError):
@@ -99,7 +99,7 @@ def parse_pcb_text(text: str) -> Board:
     # Footprints (modern and legacy KiCad 5 nodes).
     for fp in _children(root, "footprint") + _children(root, "module"):
         try:
-            comp = _parse_footprint(fp)
+            comp = _parse_footprint(fp, net_names)
             if comp:
                 board.components.append(comp)
         except (ValueError, TypeError, IndexError):
@@ -199,10 +199,29 @@ def parse_pcb_text(text: str) -> Board:
                 (x1, y2, x1, y1),
             ])
 
+    for zone in _children(root, "zone"):
+        filled = _children(zone, "filled_polygon")
+        for polygon in filled:
+            pts = _child(polygon, "pts")
+            if not pts:
+                continue
+            try:
+                points = [_floats(xy, 1, 2) for xy in _children(pts, "xy")]
+                if len(points) < 3:
+                    continue
+                layer = _child(zone, "layer")
+                net_node = _child(zone, "net")
+                net = net_names.get(str(net_node[1]), str(net_node[1])) if net_node and len(net_node) > 1 else None
+                board.zones.append(BoardZone(points=points,
+                                             layer=str(layer[1]) if layer and len(layer)>1 else "B.Cu",
+                                             net=net))
+            except (ValueError, TypeError, IndexError, SexpError):
+                continue
+
     return board
 
 
-def _parse_footprint(fp: list):
+def _parse_footprint(fp: list, net_names=None):
     at = _child(fp, "at")
     if not at:
         return None
@@ -247,14 +266,15 @@ def _parse_footprint(fp: list):
     )
 
     for pad in _children(fp, "pad"):
-        parsed = _parse_pad(pad)
+        parsed = _parse_pad(pad, net_names or {})
         if parsed:
             comp.pads.append(parsed)
 
     return comp
 
 
-def _parse_pad(pad: list):
+def _parse_pad(pad: list, net_names=None):
+    net_names = net_names or {}
     try:
         number = str(pad[1])
         shape = str(pad[2])
@@ -275,7 +295,9 @@ def _parse_pad(pad: list):
     layers = [str(x) for x in layers_node[1:]] if layers_node else []
 
     net_node = _child(pad, "net")
-    net = str(net_node[1]) if net_node and len(net_node) > 1 else None
+    net = (net_names.get(str(net_node[1]),
+                         str(net_node[2]) if len(net_node) > 2 else str(net_node[1]))
+           if net_node and len(net_node) > 1 else None)
     drill_node = _child(pad, "drill")
     try:
         drill = float(drill_node[1]) if drill_node and len(drill_node) > 1 else 0.0
