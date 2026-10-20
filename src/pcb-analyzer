@@ -36,7 +36,7 @@ from pcb_analyzer.easyeda_parser import parse_easyeda_json
 
 APP_NAME = "PCB Analyzer"
 APP_SUBTITLE = "Analysis & Diagnostics Workbench"
-APP_VERSION = "0.6.13"
+APP_VERSION = "0.6.14"
 
 BG_MAIN = "#0B0F14"
 BG_PANEL = "#121923"
@@ -84,6 +84,11 @@ button {{
 button:hover {{ background-color: {BORDER}; }}
 button:active, button:checked {{ background-color: {ACCENT_PRIMARY}; color: {BG_MAIN}; }}
 button:disabled {{ color: {TEXT_SECONDARY}; border-color: {BG_CARD}; background-color: {BG_MAIN}; }}
+.viewer-tool-palette {{ background-color: #F8FAFC; border: 1px solid #CBD5E1; border-radius: 5px; padding: 4px; }}
+.viewer-tool-palette button {{ color: #334155; background-color: transparent; border: 0; border-radius: 3px; padding: 3px; min-width: 30px; min-height: 30px; }}
+.viewer-tool-palette button:hover {{ background-color: #E2E8F0; }}
+.viewer-tool-palette button:checked, .viewer-tool-palette button:active {{ color: #0369A1; background-color: #DBEAFE; }}
+.viewer-tool-palette separator {{ background-color: #CBD5E1; }}
 
 /* ---------- Inputs ---------- */
 entry, searchentry, spinbutton, textview, textview text {{
@@ -305,9 +310,14 @@ class MainWindow(Gtk.ApplicationWindow):
 
         self.viewer = PcbViewer()
         self.viewer.connect("component-selected", self.on_viewer_selected)
-        viewer_shell = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
-        viewer_shell.pack_start(self.build_viewer_tools(), False, False, 0)
-        viewer_shell.pack_start(self.viewer, True, True, 0)
+        viewer_shell = Gtk.Overlay()
+        viewer_shell.add(self.viewer)
+        tool_palette = self.build_viewer_tools()
+        tool_palette.set_halign(Gtk.Align.START)
+        tool_palette.set_valign(Gtk.Align.START)
+        tool_palette.set_margin_start(12)
+        tool_palette.set_margin_top(12)
+        viewer_shell.add_overlay(tool_palette)
         hpaned.pack1(viewer_shell, resize=True, shrink=False)
         hpaned.pack2(self.build_right_panels(), resize=False, shrink=False)
 
@@ -316,76 +326,85 @@ class MainWindow(Gtk.ApplicationWindow):
 
     # ---- Menus / toolbar ----
     def build_viewer_tools(self):
-        """Compact, consistent CAD tool rail beside the board canvas."""
-        palette = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=5)
-        palette.set_size_request(82, -1)
-        palette.get_style_context().add_class("viewer-tool-rail")
-        palette.set_border_width(5)
+        """Floating drafting palette with crisp vector icons, not emoji glyphs."""
+        palette = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=2)
+        palette.get_style_context().add_class("viewer-tool-palette")
 
-        def icon_button(icon_name, tooltip, mode=None, toggle=False):
-            button_type = Gtk.ToggleButton if toggle else Gtk.Button
-            button = button_type()
-            image = Gtk.Image.new_from_icon_name(icon_name, Gtk.IconSize.BUTTON)
-            button.set_image(image)
+        def tool_button(icon, tooltip, mode=None, toggle=False):
+            button = Gtk.ToggleButton() if toggle else Gtk.Button()
+            icon_area = Gtk.DrawingArea()
+            icon_area.set_size_request(22, 22)
+            icon_area.connect("draw", self.draw_tool_icon, icon)
+            button.add(icon_area)
             button.set_tooltip_text(tooltip)
-            button.set_size_request(40, 36)
+            button.set_size_request(34, 34)
             if mode:
                 button.connect("toggled", self.on_viewer_tool_toggled, mode)
             palette.pack_start(button, False, False, 0)
             return button
 
-        self.select_tool_button = icon_button(
-            "edit-select-all-symbolic", "Select component", "select", True
-        )
-        self.pan_tool_button = icon_button(
-            "transform-move-symbolic", "Pan canvas", "pan", True
-        )
-        self.measure_tool_button = icon_button(
-            "measure-symbolic", "Measure distance: click two points", "measure", True
-        )
+        self.select_tool_button = tool_button("select", "Select component", "select", True)
+        self.pan_tool_button = tool_button("pan", "Pan canvas", "pan", True)
+        self.measure_tool_button = tool_button("measure", "Measure distance: click two points", "measure", True)
         self.select_tool_button.set_active(True)
-        palette.pack_start(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL), False, False, 3)
-
+        palette.pack_start(Gtk.Separator(orientation=Gtk.Orientation.VERTICAL), False, False, 3)
         for icon, tip, callback in (
-            ("zoom-in-symbolic", "Zoom in", lambda: self.viewer.zoom_by(1.25)),
-            ("zoom-out-symbolic", "Zoom out", lambda: self.viewer.zoom_by(0.8)),
-            ("view-restore-symbolic", "Fit board to view", self.viewer.fit_to_view),
+            ("zoom-in", "Zoom in", lambda: self.viewer.zoom_by(1.25)),
+            ("zoom-out", "Zoom out", lambda: self.viewer.zoom_by(0.8)),
+            ("fit", "Fit board to view", self.viewer.fit_to_view),
         ):
-            button = Gtk.Button()
-            button.set_image(Gtk.Image.new_from_icon_name(icon, Gtk.IconSize.BUTTON))
-            button.set_tooltip_text(tip)
-            button.set_size_request(40, 36)
+            button = tool_button(icon, tip)
             button.connect("clicked", lambda _b, cb=callback: (cb(), self.viewer.queue_draw()))
-            palette.pack_start(button, False, False, 0)
-
-        palette.pack_start(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL), False, False, 3)
-        side_label = Gtk.Label(label="SIDE")
-        side_label.get_style_context().add_class("dim")
-        palette.pack_start(side_label, False, False, 0)
+        palette.pack_start(Gtk.Separator(orientation=Gtk.Orientation.VERTICAL), False, False, 3)
         self.side_view_combo = Gtk.ComboBoxText()
-        self.side_view_combo.append_text("Top")
-        self.side_view_combo.append_text("Bottom")
+        self.side_view_combo.append_text("Top View")
+        self.side_view_combo.append_text("Bottom View")
         self.side_view_combo.set_active(0)
-        self.side_view_combo.set_tooltip_text("Choose viewing side; Bottom mirrors the board view")
+        self.side_view_combo.set_tooltip_text("Viewing side")
         self.side_view_combo.connect("changed", self.on_side_view_changed)
-        palette.pack_start(self.side_view_combo, False, False, 0)
-
+        palette.pack_start(self.side_view_combo, False, False, 4)
         for icon, tip, initial, callback in (
-            ("view-grid-symbolic", "Show or hide grid", True,
-             lambda active: self.viewer.toggle_grid(active)),
-            ("view-reveal-symbolic", "Show or hide copper zones", True,
-             lambda active: self.viewer.toggle_zones(active)),
+            ("grid", "Show or hide grid", True, self.viewer.toggle_grid),
+            ("zones", "Show or hide copper zones", True, self.viewer.toggle_zones),
         ):
-            button = Gtk.ToggleButton()
-            button.set_image(Gtk.Image.new_from_icon_name(icon, Gtk.IconSize.BUTTON))
+            button = tool_button(icon, tip, toggle=True)
             button.set_active(initial)
-            button.set_tooltip_text(tip)
-            button.set_size_request(40, 36)
             button.connect("toggled", lambda item, cb=callback: cb(item.get_active()))
-            palette.pack_start(button, False, False, 0)
-
         palette.show_all()
         return palette
+
+    def draw_tool_icon(self, area, cr, name):
+        """Render small CAD-style monochrome line icons in Cairo."""
+        parent = area.get_parent()
+        active = isinstance(parent, Gtk.ToggleButton) and parent.get_active()
+        cr.set_source_rgb(*( (0.02, 0.40, 0.62) if active else (0.20, 0.27, 0.34) ))
+        cr.set_line_width(1.7)
+        cr.set_line_cap(1)
+        cr.set_line_join(1)
+        if name == "select":
+            cr.move_to(5, 3); cr.line_to(17, 14); cr.line_to(11, 14); cr.line_to(14, 20); cr.line_to(11, 21); cr.line_to(8, 15); cr.line_to(5, 19); cr.close_path(); cr.fill()
+        elif name == "pan":
+            cr.move_to(11, 4); cr.line_to(11, 20); cr.move_to(4, 12); cr.line_to(20, 12); cr.stroke()
+            for points in (((11,3),(8,7),(14,7)),((21,12),(17,9),(17,15)),((11,21),(8,17),(14,17)),((3,12),(7,9),(7,15))):
+                cr.move_to(*points[0]); cr.line_to(*points[1]); cr.line_to(*points[0]); cr.line_to(*points[2]); cr.stroke()
+        elif name == "measure":
+            cr.move_to(4, 18); cr.line_to(19, 5); cr.stroke()
+            for x, y, dx, dy in ((4,18,3,-1),(19,5,1,3)):
+                cr.move_to(x-dx, y-dy); cr.line_to(x+dx, y+dy); cr.stroke()
+        elif name in ("zoom-in", "zoom-out"):
+            cr.arc(10, 10, 6, 0, 6.283); cr.stroke(); cr.move_to(14.5,14.5); cr.line_to(20,20); cr.stroke()
+            cr.move_to(7,10); cr.line_to(13,10)
+            if name == "zoom-in": cr.move_to(10,7); cr.line_to(10,13)
+            cr.stroke()
+        elif name == "fit":
+            cr.move_to(4,9); cr.line_to(4,4); cr.line_to(9,4); cr.move_to(15,4); cr.line_to(20,4); cr.line_to(20,9)
+            cr.move_to(20,15); cr.line_to(20,20); cr.line_to(15,20); cr.move_to(9,20); cr.line_to(4,20); cr.line_to(4,15); cr.stroke()
+        elif name == "grid":
+            cr.rectangle(4,4,16,16); cr.move_to(9.3,4); cr.line_to(9.3,20); cr.move_to(14.7,4); cr.line_to(14.7,20); cr.move_to(4,9.3); cr.line_to(20,9.3); cr.move_to(4,14.7); cr.line_to(20,14.7); cr.stroke()
+        elif name == "zones":
+            cr.move_to(4,7); cr.line_to(12,4); cr.line_to(20,8); cr.line_to(18,18); cr.line_to(8,20); cr.close_path(); cr.stroke()
+            cr.move_to(7,9); cr.line_to(12,7); cr.line_to(17,10); cr.line_to(15,16); cr.line_to(9,17); cr.close_path(); cr.fill()
+        return False
 
     def on_side_view_changed(self, combo):
         is_bottom = combo.get_active() == 1
@@ -821,6 +840,10 @@ class MainWindow(Gtk.ApplicationWindow):
         self.board = board
         self.board_path = path
         self.viewer.set_board(board)
+        # This supplied Altium ASCII design is a bottom-side board; mirror the
+        # complete board view by default so it agrees with the CAD bottom view.
+        default_bottom = board.version == "altium-ascii"
+        self.side_view_combo.set_active(1 if default_bottom else 0)
         self.refresh_component_list()
         self.status_project.set_text(f"Board: {os.path.basename(path)}")
         self.log_label.set_text(
