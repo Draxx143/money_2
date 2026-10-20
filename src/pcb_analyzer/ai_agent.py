@@ -143,6 +143,26 @@ Keep the message concise, technical, and in the user's language.
 """
 
 
+
+def _system_prompt_for(user_prompt: str) -> str:
+    """Reinforce strict language matching, including an explicit Farsi directive."""
+    prompt = SYSTEM_PROMPT + "\n\nSTRICT LANGUAGE RULE: Every user-facing sentence must use the exact language of the user's question. Do not answer in English unless the user asked in English. Keep JSON keys and component references in English."
+    if any(char in user_prompt for char in "پچژگکی"):
+        prompt += ("\nThe user's question is in Persian (Farsi). Write the message and every suggested test only in Persian. "
+                   "پاسخ و تمام پیشنهادهای آزمایش را فقط به زبان فارسی بنویسید؛ از انگلیسی استفاده نکنید.")
+    elif any("\u0600" <= char <= "\u06ff" for char in user_prompt):
+        prompt += "\nThe user's question is in Arabic. Write the message and suggested tests only in Arabic."
+    return prompt
+
+
+def format_ai_reply(data: dict) -> str:
+    """Format only the AI answer and its tests, without UI/system chatter."""
+    message = data.get("message") or ""
+    tests = data.get("suggested_tests", [])
+    if tests:
+        message += "\n\n" + "\n".join(f"• {test}" for test in tests)
+    return message
+
 def parse_ai_response(raw: str) -> dict:
     """Normalize model JSON, allowing fences and surrounding explanatory text."""
     text = raw.strip() if isinstance(raw, str) else str(raw)
@@ -207,7 +227,8 @@ def ask_ai_async(client: OllamaClient, user_prompt: str, board, store, callback:
                 client.model = models[0]
                 warning = f"Model {previous} was unavailable; using {client.model}."
             context = build_context(board, store)
-            raw = client.generate(f"{context}\n\nUser Symptom/Question:\n{user_prompt}", SYSTEM_PROMPT)
+            raw = client.generate(f"{context}\n\nUser Symptom/Question:\n{user_prompt}",
+                                  _system_prompt_for(user_prompt))
             result = {"data": parse_ai_response(raw)}
             if warning:
                 result["warning"] = warning

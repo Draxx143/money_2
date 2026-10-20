@@ -7,7 +7,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 from pcb_analyzer.ai_agent import OllamaClient, OllamaError, parse_ai_response, ask_ai_async  # noqa: E402
 from pcb_analyzer.testpoints import TestPointStore, TestPoint  # noqa: E402
 from pcb_analyzer.model import Board, Component  # noqa: E402
-from pcb_analyzer.ai_agent import build_context  # noqa: E402
+from pcb_analyzer.ai_agent import build_context, format_ai_reply  # noqa: E402
 
 class InlineThread:
     def __init__(self, target, **_kwargs): self.target = target
@@ -43,6 +43,22 @@ class TestAIResponse(unittest.TestCase):
         ask_ai_async(client, "hi", None, TestPointStore(), callback)
         callback.assert_called_once()
         self.assertIn("late", callback.call_args.args[0]["error"])
+
+    def test_reply_format_contains_only_answer_and_tests(self):
+        reply = format_ai_reply({"message": "پاسخ", "suggested_tests": ["اندازه‌گیری ولتاژ"]})
+        self.assertEqual(reply, "پاسخ\n\n• اندازه‌گیری ولتاژ")
+        self.assertNotIn("Suggested Tests", reply)
+
+    @mock.patch("pcb_analyzer.ai_agent.threading.Thread", InlineThread)
+    def test_persian_prompt_explicitly_requires_persian_response(self):
+        client = mock.Mock()
+        client.list_models.return_value = []
+        client.generate.return_value = '{"message":"پاسخ"}'
+        callback = mock.Mock()
+        ask_ai_async(client, "سلام، چرا LED روشن نمی‌شود؟", None, TestPointStore(), callback)
+        system_prompt = client.generate.call_args.args[1]
+        self.assertIn("Persian (Farsi)", system_prompt)
+        self.assertIn("فقط به زبان فارسی", system_prompt)
 
     def test_context_keeps_testpoints_without_board(self):
         store = TestPointStore()

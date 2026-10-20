@@ -32,7 +32,7 @@ from pcb_analyzer.testpoints import (
     TestPoint, TestPointStore,
 )
 from pcb_analyzer.viewer import PcbViewer
-from pcb_analyzer.ai_agent import OllamaClient, ask_ai_async
+from pcb_analyzer.ai_agent import OllamaClient, ask_ai_async, format_ai_reply
 from pcb_analyzer.report import export_csv
 from pcb_analyzer.altium_parser import AltiumParserError, parse_pcbdoc
 from pcb_analyzer.easyeda_parser import parse_easyeda_json
@@ -1189,7 +1189,6 @@ class MainWindow(Gtk.ApplicationWindow):
                 self.show_error(str(exc))
                 return
             self.ollama_client.model = model_entry.get_text().strip() or self.ollama_client.model
-            self.append_chat("System", f"AI configured to use {self.ollama_client.model} at {self.ollama_client.host}.", "#4DA3FF")
         dlg.destroy()
 
     def append_chat(self, sender, text, color="#F1F5F9"):
@@ -1221,7 +1220,6 @@ class MainWindow(Gtk.ApplicationWindow):
         self._ai_request_in_flight = True
         self.btn_ai_send.set_sensitive(False)
         self.btn_ai_send.set_label("Thinking…")
-        self.append_chat("System", "Analyzing board and measurements…", "#94A3B8")
 
         def on_result(res):
             # This callback is invoked from the background thread; use GLib.idle_add to safely update UI
@@ -1241,19 +1239,12 @@ class MainWindow(Gtk.ApplicationWindow):
         self.btn_ai_send.set_label("Send")
 
         if "error" in res:
-            self.append_chat("Error", res["error"], "#9b2226")
+            self.append_chat("AI", res["error"], "#9b2226")
             return
 
-        if res.get("warning"):
-            self.append_chat("System", res["warning"], "#a07600")
         data = res["data"]
-        msg = data.get("message") or "No message."
+        full_reply = format_ai_reply(data) or "No message."
         suspects = data.get("suspect_components", [])
-        tests = data.get("suggested_tests", [])
-
-        full_reply = msg
-        if tests:
-            full_reply += "\n\nSuggested Tests:\n- " + "\n- ".join(tests)
 
         self.append_chat("AI", full_reply, "#F1F5F9")
 
@@ -1269,15 +1260,12 @@ class MainWindow(Gtk.ApplicationWindow):
                 if component and component.reference.lower() not in seen:
                     seen.add(component.reference.lower())
                     valid_refs.append(component.reference)
-                elif component is None:
-                    self.append_chat("System", f"AI mentioned unknown component: {ref}", "#a07600")
 
             if valid_refs:
                 # TODO: viewer supports one active selection; list all validated suspects.
                 first_ref = valid_refs[0]
                 self.viewer.select_component(first_ref)
                 self.on_viewer_selected(self.viewer, first_ref)
-                self.append_chat("System", f"Valid suspect components: {', '.join(valid_refs)}. Highlighted {first_ref}.", "#4DA3FF")
 
         return False # Remove from idle queue
 
