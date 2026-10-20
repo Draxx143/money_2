@@ -36,7 +36,7 @@ from pcb_analyzer.easyeda_parser import parse_easyeda_json
 
 APP_NAME = "PCB Analyzer"
 APP_SUBTITLE = "Analysis & Diagnostics Workbench"
-APP_VERSION = "0.6.18"
+APP_VERSION = "0.6.19"
 
 BG_MAIN = "#0B0F14"
 BG_PANEL = "#121923"
@@ -401,7 +401,7 @@ class MainWindow(Gtk.ApplicationWindow):
         panel.pack_start(notebook, True, True, 0)
         categories = ("All", "Copper", "Non-Copper", "Object")
         for category in categories:
-            model = Gtk.ListStore(bool, str, str, str)
+            model = Gtk.ListStore(bool, str, str)
             self.layer_models[category] = model
             tree = Gtk.TreeView(model=model)
             tree.set_headers_visible(False)
@@ -410,10 +410,9 @@ class MainWindow(Gtk.ApplicationWindow):
             tree.get_selection().connect("changed", self.on_layer_selection_changed)
             self.layer_trees[category] = tree
 
-            eye = Gtk.CellRendererPixbuf()
-            eye.set_property("mode", Gtk.CellRendererMode.ACTIVATABLE)
-            eye.connect("activate", self.on_layer_eye_activated, model)
-            eye_column = Gtk.TreeViewColumn("Visible", eye, icon_name=3)
+            eye = Gtk.CellRendererToggle()
+            eye.connect("toggled", self.on_layer_eye_activated, model)
+            eye_column = Gtk.TreeViewColumn("Visible", eye, active=0)
             eye_column.set_fixed_width(28)
             tree.append_column(eye_column)
 
@@ -457,11 +456,10 @@ class MainWindow(Gtk.ApplicationWindow):
             model.clear()
         for layer in self.viewer.layer_names:
             visible = layer in self.viewer.visible_layers
-            icon = "view-visible-symbolic" if visible else "view-hidden-symbolic"
             color = colors.get(layer, "#64748B")
             category = self._layer_category(layer)
-            self.layer_models["All"].append((visible, layer, color, icon))
-            self.layer_models[category].append((visible, layer, color, icon))
+            self.layer_models["All"].append((visible, layer, color))
+            self.layer_models[category].append((visible, layer, color))
         for category, model in self.layer_models.items():
             tree = self.layer_trees[category]
             for row_index, row in enumerate(model):
@@ -474,12 +472,10 @@ class MainWindow(Gtk.ApplicationWindow):
         layer = model.get_value(tree_iter, 1)
         visible = not model.get_value(tree_iter, 0)
         self.viewer.set_layer_visible(layer, visible)
-        icon = "view-visible-symbolic" if visible else "view-hidden-symbolic"
         for other_model in self.layer_models.values():
             for row in other_model:
                 if row[1] == layer:
                     row[0] = visible
-                    row[3] = icon
 
     def on_layer_selection_changed(self, selection):
         model, tree_iter = selection.get_selected()
