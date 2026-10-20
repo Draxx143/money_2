@@ -36,7 +36,7 @@ from pcb_analyzer.easyeda_parser import parse_easyeda_json
 
 APP_NAME = "PCB Analyzer"
 APP_SUBTITLE = "Analysis & Diagnostics Workbench"
-APP_VERSION = "0.6.17"
+APP_VERSION = "0.6.18"
 
 BG_MAIN = "#0B0F14"
 BG_PANEL = "#121923"
@@ -84,6 +84,11 @@ button {{
 button:hover {{ background-color: {BORDER}; }}
 button:active, button:checked {{ background-color: {ACCENT_PRIMARY}; color: {BG_MAIN}; }}
 button:disabled {{ color: {TEXT_SECONDARY}; border-color: {BG_CARD}; background-color: {BG_MAIN}; }}
+.layers-panel {{ background-color: #F8FAFC; color: #1E293B; border: 1px solid #94A3B8; border-radius: 4px; }}
+.layers-panel label {{ color: #1E293B; }}
+.layers-panel treeview, .layers-panel treeview.view {{ background-color: #F8FAFC; color: #1E293B; }}
+.layers-panel treeview:selected, .layers-panel treeview.view:selected {{ background-color: #BFDBFE; color: #0F172A; }}
+.layers-panel notebook, .layers-panel notebook header {{ background-color: #E2E8F0; }}
 .viewer-tool-palette {{ background-color: #F8FAFC; border: 1px solid #CBD5E1; border-radius: 5px; padding: 4px; }}
 .viewer-tool-palette button {{ color: #334155; background-color: transparent; border: 0; border-radius: 3px; padding: 3px; min-width: 30px; min-height: 30px; }}
 .viewer-tool-palette button:hover {{ background-color: #E2E8F0; }}
@@ -318,6 +323,12 @@ class MainWindow(Gtk.ApplicationWindow):
         tool_palette.set_margin_start(12)
         tool_palette.set_margin_top(12)
         viewer_shell.add_overlay(tool_palette)
+        layer_panel = self.build_layer_panel()
+        layer_panel.set_halign(Gtk.Align.END)
+        layer_panel.set_valign(Gtk.Align.START)
+        layer_panel.set_margin_end(12)
+        layer_panel.set_margin_top(12)
+        viewer_shell.add_overlay(layer_panel)
         hpaned.pack1(viewer_shell, resize=True, shrink=False)
         hpaned.pack2(self.build_right_panels(), resize=False, shrink=False)
 
@@ -373,6 +384,108 @@ class MainWindow(Gtk.ApplicationWindow):
         palette.show_all()
         return palette
 
+    def build_layer_panel(self):
+        """Layer browser with per-layer visibility toggles and active selection."""
+        panel = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        panel.set_size_request(218, 260)
+        panel.get_style_context().add_class("layers-panel")
+        heading = Gtk.Label(label="Layers and Objects", xalign=0)
+        heading.set_margin_start(8); heading.set_margin_top(6); heading.set_margin_bottom(5)
+        panel.pack_start(heading, False, False, 0)
+
+        self.layer_models = {}
+        self.layer_trees = {}
+        notebook = Gtk.Notebook()
+        notebook.set_tab_pos(Gtk.PositionType.TOP)
+        notebook.set_scrollable(True)
+        panel.pack_start(notebook, True, True, 0)
+        categories = ("All", "Copper", "Non-Copper", "Object")
+        for category in categories:
+            model = Gtk.ListStore(bool, str, str, str)
+            self.layer_models[category] = model
+            tree = Gtk.TreeView(model=model)
+            tree.set_headers_visible(False)
+            tree.get_style_context().add_class("layer-list")
+            tree.get_selection().set_mode(Gtk.SelectionMode.SINGLE)
+            tree.get_selection().connect("changed", self.on_layer_selection_changed)
+            self.layer_trees[category] = tree
+
+            eye = Gtk.CellRendererPixbuf()
+            eye.set_property("mode", Gtk.CellRendererMode.ACTIVATABLE)
+            eye.connect("activate", self.on_layer_eye_activated, model)
+            eye_column = Gtk.TreeViewColumn("Visible", eye, icon_name=3)
+            eye_column.set_fixed_width(28)
+            tree.append_column(eye_column)
+
+            swatch = Gtk.CellRendererText()
+            swatch.set_property("text", "●")
+            swatch.set_property("foreground", "#64748B")
+            swatch_column = Gtk.TreeViewColumn("Color", swatch)
+            swatch_column.set_cell_data_func(swatch, self.set_layer_swatch)
+            swatch_column.set_fixed_width(22)
+            tree.append_column(swatch_column)
+
+            text = Gtk.CellRendererText()
+            text_column = Gtk.TreeViewColumn("Layer", text, text=1)
+            tree.append_column(text_column)
+            scroll = Gtk.ScrolledWindow()
+            scroll.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
+            scroll.add(tree)
+            notebook.append_page(scroll, Gtk.Label(label=category))
+        return panel
+
+    def set_layer_swatch(self, _column, renderer, model, tree_iter, _data=None):
+        renderer.set_property("foreground", model.get_value(tree_iter, 2))
+
+    def _layer_category(self, layer):
+        if layer in ("F.Cu", "B.Cu", "Multi-Layer"):
+            return "Copper"
+        if layer in ("F.SilkS", "B.SilkS", "F.Mask", "B.Mask", "F.Paste", "B.Paste"):
+            return "Non-Copper"
+        return "Object"
+
+    def refresh_layer_panel(self):
+        if not hasattr(self, "layer_models"):
+            return
+        colors = {
+            "F.Cu": "#E64545", "B.Cu": "#244DFF", "F.SilkS": "#C8B817",
+            "B.SilkS": "#55B82A", "F.Mask": "#800000", "B.Mask": "#A000FF",
+            "F.Paste": "#64748B", "B.Paste": "#64748B", "Edge.Cuts": "#E000D5",
+            "Multi-Layer": "#929292", "Ratlines": "#F59E0B", "Document": "#CBD5E1",
+        }
+        for model in self.layer_models.values():
+            model.clear()
+        for layer in self.viewer.layer_names:
+            visible = layer in self.viewer.visible_layers
+            icon = "view-visible-symbolic" if visible else "view-hidden-symbolic"
+            color = colors.get(layer, "#64748B")
+            category = self._layer_category(layer)
+            self.layer_models["All"].append((visible, layer, color, icon))
+            self.layer_models[category].append((visible, layer, color, icon))
+        for category, model in self.layer_models.items():
+            tree = self.layer_trees[category]
+            for row_index, row in enumerate(model):
+                if row[1] == self.viewer.active_layer:
+                    tree.get_selection().select_path(Gtk.TreePath.new_from_indices([row_index]))
+                    break
+
+    def on_layer_eye_activated(self, _renderer, path, model):
+        tree_iter = model.get_iter(path)
+        layer = model.get_value(tree_iter, 1)
+        visible = not model.get_value(tree_iter, 0)
+        self.viewer.set_layer_visible(layer, visible)
+        icon = "view-visible-symbolic" if visible else "view-hidden-symbolic"
+        for other_model in self.layer_models.values():
+            for row in other_model:
+                if row[1] == layer:
+                    row[0] = visible
+                    row[3] = icon
+
+    def on_layer_selection_changed(self, selection):
+        model, tree_iter = selection.get_selected()
+        if tree_iter is not None:
+            self.viewer.set_active_layer(model.get_value(tree_iter, 1))
+
     def draw_tool_icon(self, area, cr, name):
         """Render small CAD-style monochrome line icons in Cairo."""
         parent = area.get_parent()
@@ -410,6 +523,7 @@ class MainWindow(Gtk.ApplicationWindow):
         side = "Bottom" if combo.get_active() == 1 else "Top"
         is_bottom = side == "Bottom"
         self.viewer.set_view_side(side)
+        self.refresh_layer_panel()
         if hasattr(self, "bottom_view_menu_item"):
             self.bottom_view_menu_item.set_active(is_bottom)
         self.viewer.queue_draw()
@@ -845,6 +959,8 @@ class MainWindow(Gtk.ApplicationWindow):
         # complete board view by default so it agrees with the CAD bottom view.
         default_bottom = board.version == "altium-ascii"
         self.side_view_combo.set_active(1 if default_bottom else 0)
+        self.viewer.set_view_side("Bottom" if default_bottom else "Top")
+        self.refresh_layer_panel()
         self.refresh_component_list()
         self.status_project.set_text(f"Board: {os.path.basename(path)}")
         self.log_label.set_text(

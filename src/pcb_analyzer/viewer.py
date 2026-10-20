@@ -37,6 +37,9 @@ class PcbViewer(Gtk.DrawingArea):
         self.offset_y = 0.0
         self.flip_vertical = False
         self.view_side = "Top"
+        self.layer_names = []
+        self.visible_layers = set()
+        self.active_layer = None
         self.selected_ref = None
         self.hover_ref = None
         self.marker = None          # (x_mm, y_mm) or None
@@ -131,6 +134,21 @@ class PcbViewer(Gtk.DrawingArea):
 
     def set_board(self, board: Board):
         self.board = board
+        discovered = {self._canonical_layer(layer) for layer in getattr(board, "layers", [])}
+        discovered.update(self._canonical_layer(track.layer) for track in board.tracks)
+        discovered.update(self._canonical_layer(component.layer) for component in board.components)
+        discovered.update(self._canonical_layer(pad_layer)
+                          for component in board.components for pad in component.pads
+                          for pad_layer in (pad.layers or [component.layer]))
+        discovered.update(self._canonical_layer(zone.layer) for zone in getattr(board, "zones", []))
+        if board.outline.segments:
+            discovered.add("Edge.Cuts")
+        standard_order = ("F.Cu", "B.Cu", "F.SilkS", "B.SilkS", "F.Mask", "B.Mask",
+                          "F.Paste", "B.Paste", "Ratlines", "Edge.Cuts", "Multi-Layer", "Document")
+        self.layer_names = [layer for layer in standard_order if layer in discovered]
+        self.layer_names.extend(sorted(discovered - set(self.layer_names)))
+        self.visible_layers = set(self.layer_names)
+        self.active_layer = self.layer_names[0] if self.layer_names else None
         self.measure_points.clear()
         self.measurements.clear()
         self.measure_cursor = None
@@ -191,7 +209,14 @@ class PcbViewer(Gtk.DrawingArea):
 
     def set_view_side(self, side):
         self.view_side = "Bottom" if side == "Bottom" else "Top"
-        # Top and bottom are layer filters, not geometric reflections.
+        # Side selection applies a useful layer preset; individual layers can
+        # then be independently enabled/disabled in the layer panel.
+        prefix = "B." if self.view_side == "Bottom" else "F."
+        self.visible_layers = {
+            layer for layer in self.layer_names
+            if layer.startswith(prefix) or layer in ("Multi-Layer", "Edge.Cuts")
+        }
+        self.active_layer = "B.Cu" if self.view_side == "Bottom" else "F.Cu"
         self.flip_vertical = False
         if self.selected_ref and not self._component_is_visible(
                 next((c for c in self.board.components if c.reference == self.selected_ref), None)):
@@ -199,12 +224,29 @@ class PcbViewer(Gtk.DrawingArea):
         self._build_snap_points()
         self.queue_draw()
 
+    @staticmethod
+    def _canonical_layer(layer):
+        value = str(layer or "").strip()
+        aliases = {"MULTILAYER": "Multi-Layer", "MULTI-LAYER": "Multi-Layer",
+                   "TOP": "F.Cu", "BOTTOM": "B.Cu"}
+        return aliases.get(value.upper(), value)
+
+    def set_layer_visible(self, layer, visible):
+        layer = self._canonical_layer(layer)
+        if visible:
+            self.visible_layers.add(layer)
+        else:
+            self.visible_layers.discard(layer)
+        self.active_layer = layer
+        self._build_snap_points()
+        self.queue_draw()
+
+    def set_active_layer(self, layer):
+        self.active_layer = self._canonical_layer(layer)
+        self.queue_draw()
+
     def _layer_is_visible(self, layer):
-        normalized = str(layer or "").strip().upper().replace("_", "-")
-        if normalized in ("EDGE.CUTS", "MULTI-LAYER", "MULTILAYER", "ALL.CU"):
-            return True
-        prefix = "B." if self.view_side == "Bottom" else "F."
-        return normalized.startswith(prefix.upper())
+        return self._canonical_layer(layer) in self.visible_layers
 
     def _component_has_visible_pad(self, component):
         return any(any(self._layer_is_visible(layer)
@@ -259,15 +301,16 @@ class PcbViewer(Gtk.DrawingArea):
             cr.close_path()
             cr.fill()
 
-        # Outline
-        cr.set_source_rgb(*LAYER_COLORS["Edge.Cuts"])
-        cr.set_line_width(1.5)
-        for x1, y1, x2, y2 in self.board.outline.segments:
-            px1, py1 = self.mm_to_px(x1, y1)
-            px2, py2 = self.mm_to_px(x2, y2)
-            cr.move_to(px1, py1)
-            cr.line_to(px2, py2)
-        cr.stroke()
+        # Outline is an independently toggleable Edge.Cuts layer.
+        if self._layer_is_visible("Edge.Cuts"):
+            cr.set_source_rgb(*LAYER_COLORS["Edge.Cuts"])
+            cr.set_line_width(1.5)
+            for x1, y1, x2, y2 in self.board.outline.segments:
+                px1, py1 = self.mm_to_px(x1, y1)
+                px2, py2 = self.mm_to_px(x2, y2)
+                cr.move_to(px1, py1)
+                cr.line_to(px2, py2)
+            cr.stroke()
 
         # Tracks: round caps and joins keep adjoining Altium segments visually
         # continuous at acute corners and very small endpoint-rounding errors.
