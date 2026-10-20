@@ -220,10 +220,49 @@ def _parse_ascii_pcbdoc(path: str) -> Board:
         component_ref=(components_by_id.get(item.get("COMPONENT", "")).reference
                        if item.get("COMPONENT", "") in components_by_id else None),
     ) for item in tracks)
+    _mirror_bottom_side_components(board)
     board.layers = sorted({item.layer for item in board.tracks} | {
         pad.layers[0] for component in board.components for pad in component.pads
     })
     return board
+
+
+def _mirror_bottom_side_components(board: Board) -> None:
+    """Mirror bottom-side placements into the viewer's common top view.
+
+    Altium ASCII PCB coordinates for bottom-side component placements and
+    their local primitives are expressed in the bottom view. Reflect those
+    component-owned objects across the board's horizontal centerline while
+    leaving routed board copper and top-side parts untouched.
+    """
+    outline_y = [coord for segment in board.outline.segments
+                 for coord in (segment[1], segment[3])]
+    if not outline_y:
+        bounds = board.bounds()
+        if bounds is None:
+            return
+        axis_sum = bounds[1] + bounds[3]
+    else:
+        axis_sum = min(outline_y) + max(outline_y)
+
+    bottom_refs = set()
+    for component in board.components:
+        if component.layer != "B.Cu":
+            continue
+        bottom_refs.add(component.reference)
+        component.y = axis_sum - component.y
+        component.rotation = (-component.rotation) % 360
+        for pad in component.pads:
+            pad.y = -pad.y
+        if component.reference_y is not None:
+            component.reference_y = axis_sum - component.reference_y
+        if component.value_y is not None:
+            component.value_y = axis_sum - component.value_y
+
+    for track in board.tracks:
+        if track.component_ref in bottom_refs:
+            track.start_y = axis_sum - track.start_y
+            track.end_y = axis_sum - track.end_y
 
 
 def _ascii_mm(value: Optional[str]) -> float:

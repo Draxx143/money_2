@@ -27,6 +27,9 @@ class TestAltiumAsciiParser(unittest.TestCase):
         self.assertIsNotNone(capacitor)
         self.assertEqual(capacitor.value, "100nF")
         self.assertEqual(capacitor.layer, "B.Cu")
+        # Bottom-side Altium placements must be mirrored into the viewer's
+        # common top-view orientation; the fixture places C1 near the lower edge.
+        self.assertGreater(capacitor.y, 50.0)
         self.assertEqual(capacitor.footprint, "CAP-SMD_L2.2-W1.3-RD")
         self.assertIsNotNone(capacitor.reference_x)
         self.assertIsNotNone(capacitor.value_x)
