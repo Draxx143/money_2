@@ -31,10 +31,11 @@ from pcb_analyzer.testpoints import (
 )
 from pcb_analyzer.viewer import PcbViewer
 from pcb_analyzer.ai_agent import OllamaClient, ask_ai_async
+from pcb_analyzer.altium_parser import AltiumParserError, parse_pcbdoc
 
 APP_NAME = "PCB Analyzer"
 APP_SUBTITLE = "Analysis & Diagnostics Workbench"
-APP_VERSION = "0.6.0"
+APP_VERSION = "0.6.1"
 
 BG_MAIN = "#0B0F14"
 BG_PANEL = "#121923"
@@ -699,13 +700,9 @@ class MainWindow(Gtk.ApplicationWindow):
             if lower.endswith(".kicad_pcb"):
                 board = parse_pcb(path)
             elif lower.endswith(".pcbdoc") or lower.endswith(".prjpcb"):
-                if not HAS_ALTIUM:
-                    self.show_error(
-                        "Altium support requires the 'altium-monkey' package.\n\n"
-                        "Install it with:\n  pip install altium-monkey --break-system-packages\n\n"
-                        "Then restart the application."
-                    )
-                    return
+                # ASCII Altium exports work without the optional altium-monkey
+                # package. The parser reports a useful error for binary files
+                # if that dependency is missing.
                 board = parse_pcbdoc(path)
             else:
                 self.show_error(f"Unsupported file extension: {path}\n\n"
