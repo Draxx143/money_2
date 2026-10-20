@@ -1073,6 +1073,7 @@ class MainWindow(Gtk.ApplicationWindow):
             tp = dlg.build_tp()
             self.store.add(tp)
             self.refresh_testpoints_view()
+            self.queue_testpoint_autosave()
         dlg.destroy()
 
     def on_edit_testpoint(self, _w):
@@ -1120,6 +1121,7 @@ class MainWindow(Gtk.ApplicationWindow):
             tp = dlg.build_tp()
             self.store.add(tp)
             self.refresh_testpoints_view()
+            self.queue_testpoint_autosave()
         dlg.destroy()
 
     # ---- Auto-evaluate / Suggest ----
@@ -1131,6 +1133,7 @@ class MainWindow(Gtk.ApplicationWindow):
             status, _reason = evaluate_testpoint(tp)
             tp.status = status
         self.refresh_testpoints_view()
+        self.queue_testpoint_autosave()
         counts = summarize_results(self.store.all())
         summary = (
             f"Evaluated {len(self.store)} test point(s): "
@@ -1156,8 +1159,6 @@ class MainWindow(Gtk.ApplicationWindow):
         for tp in suggestions:
             self.store.add(tp)
         self.refresh_testpoints_view()
-        self.queue_testpoint_autosave()
-        self.queue_testpoint_autosave()
         self.queue_testpoint_autosave()
         self.log_label.set_text(
             f"Added {len(suggestions)} suggested test point(s) for {ref}. "
