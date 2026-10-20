@@ -907,9 +907,15 @@ class MainWindow(Gtk.ApplicationWindow):
             f"Loaded {len(board.components)} components, {len(board.tracks)} tracks"
         )
         self.clear_inspector()
-        if self.store.load_if_exists(path):
+        try:
+            if self.store.load_if_exists(path):
+                suffix = f" — {len(self.store)} test point(s) loaded"
+                if self.store.skipped:
+                    suffix += f"; skipped {self.store.skipped} invalid entry/entries"
+                self.log_label.set_text(self.log_label.get_text() + suffix)
+        except ValueError as exc:
             self.log_label.set_text(self.log_label.get_text() +
-                                    f" — {len(self.store)} test point(s) loaded")
+                                    f" — saved test points ignored: {exc}")
         self.refresh_testpoints_view()
 
 
