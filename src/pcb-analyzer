@@ -1182,8 +1182,13 @@ class MainWindow(Gtk.ApplicationWindow):
 
         dlg.show_all()
         if dlg.run() == Gtk.ResponseType.OK:
-            self.ollama_client.host = host_entry.get_text().strip()
-            self.ollama_client.model = model_entry.get_text().strip()
+            try:
+                self.ollama_client.host = self.ollama_client._validate_host(host_entry.get_text())
+            except ValueError as exc:
+                dlg.destroy()
+                self.show_error(str(exc))
+                return
+            self.ollama_client.model = model_entry.get_text().strip() or self.ollama_client.model
             self.append_chat("System", f"AI configured to use {self.ollama_client.model} at {self.ollama_client.host}.", "#4DA3FF")
         dlg.destroy()
 
