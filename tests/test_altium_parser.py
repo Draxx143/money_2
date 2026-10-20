@@ -27,9 +27,11 @@ class TestAltiumAsciiParser(unittest.TestCase):
         self.assertIsNotNone(capacitor)
         self.assertEqual(capacitor.value, "100nF")
         self.assertEqual(capacitor.layer, "B.Cu")
-        # Bottom-side C1 must be reflected into the top-view board position.
-        self.assertGreater(capacitor.y, 50.0)
+        # ASCII component coordinates already match the board-space coordinates;
+        # reflecting C1 again moves it to the opposite side of the board.
+        self.assertLess(capacitor.y, 50.0)
         self.assertGreater(capacitor.y, board.find_component("U5").y)
+        self.assertAlmostEqual(capacitor.y, 44.3631, places=2)
         self.assertEqual(capacitor.footprint, "CAP-SMD_L2.2-W1.3-RD")
         self.assertIsNotNone(capacitor.reference_x)
         self.assertIsNotNone(capacitor.value_x)
