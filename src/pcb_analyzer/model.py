@@ -18,6 +18,7 @@ class Pad:
     layers: List[str] = field(default_factory=list)
     net: Optional[str] = None
     hole_diameter: float = 0.0
+    rotation: float = 0.0
 
 
 @dataclass
@@ -60,6 +61,17 @@ class Track:
     width: float
     layer: str
     component_ref: Optional[str] = None
+    net: Optional[str] = None
+
+
+@dataclass
+class Via:
+    x: float
+    y: float
+    size: float
+    drill: float
+    layers: List[str] = field(default_factory=list)
+    net: Optional[str] = None
 
 
 @dataclass
@@ -84,6 +96,7 @@ class Board:
     outline: BoardOutline = field(default_factory=BoardOutline)
     zones: List[BoardZone] = field(default_factory=list)
     layers: List[str] = field(default_factory=list)
+    vias: List[Via] = field(default_factory=list)
 
     def bounds(self):
         """Return (min_x, min_y, max_x, max_y) covering all geometry, or None."""

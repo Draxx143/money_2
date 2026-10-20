@@ -37,6 +37,24 @@ class TestParser(unittest.TestCase):
     def test_outline(self):
         self.assertGreaterEqual(len(self.board.outline.segments), 4)
 
+    def test_legacy_module_net_via_drill_and_edge_circle(self):
+        text = '''(kicad_pcb
+          (net 1 "GND")
+          (module "Legacy:Part" (layer "B.Cu") (at 10 20 90)
+            (fp_text reference "Q1") (fp_text value "FET")
+            (pad "1" thru_hole circle (at 1 2 45) (size 2 2) (drill 0.8)
+              (layers "*.Cu") (net 1 "GND")))
+          (segment (start 0 0) (end 1 1) (width 0.2) (layer "B.Cu") (net 1))
+          (via (at 4 5) (size 0.8) (drill 0.4) (layers "F.Cu" "B.Cu") (net 1))
+          (gr_circle (center 0 0) (end 2 0) (layer "Edge.Cuts")))'''
+        board = parse_pcb_text(text)
+        self.assertEqual(board.components[0].reference, "Q1")
+        self.assertEqual(board.components[0].pads[0].hole_diameter, 0.8)
+        self.assertEqual(board.components[0].pads[0].rotation, 45)
+        self.assertEqual(board.tracks[0].net, "GND")
+        self.assertEqual(board.vias[0].net, "GND")
+        self.assertGreater(len(board.outline.segments), 60)
+
     def test_bounds(self):
         b = self.board.bounds()
         self.assertIsNotNone(b)
