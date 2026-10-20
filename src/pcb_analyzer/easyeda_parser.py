@@ -61,7 +61,8 @@ def parse_easyeda_json(path: str) -> Board:
             if len(fields) < 4:
                 continue
             layer_id, net, path_data = fields[1], fields[2], fields[3]
-            if layer_id in ("1", "2") and net and "cutout" not in shape.lower():
+            region_type = fields[4].strip().lower() if len(fields) > 4 else "solid"
+            if layer_id in ("1", "2") and net and region_type != "cutout":
                 points = _path_points(path_data)
                 if len(points) >= 3:
                     raw_zones.append((points, _layer(layer_id), net))
@@ -163,14 +164,16 @@ def _parse_lib(shape: str):
             pad_x, pad_y = _float(fields[2]), _float(fields[3])
             layer = _layer(fields[6])
             hole = _float(fields[9]) * UNIT_MM
+            rotation = _float(fields[13]) if len(fields) > 13 else 0.0
+            shape_map = {"RECT": "rect", "ELLIPSE": "circle", "OVAL": "oval", "POLYGON": "rect"}
             component.pads.append(Pad(
                 number=fields[8],
                 x=(pad_x * UNIT_MM - component.x),
                 y=(-pad_y * UNIT_MM - component.y),
                 width=_float(fields[4]) * UNIT_MM,
                 height=_float(fields[5]) * UNIT_MM,
-                shape="circle" if pad_type == "ELLIPSE" else "rect",
-                layers=[layer],
+                shape=shape_map.get(pad_type, "rect"),
+                layers=[layer], rotation=rotation,
                 net=fields[7] or None,
                 hole_diameter=hole,
             ))
@@ -197,11 +200,45 @@ def _number_pairs(value: str):
 
 
 def _path_points(path_data: str):
-    # EasyEDA paths are a compact sequence of M/L commands; curve commands are
-    # ignored rather than inventing geometry where unsupported.
-    return [(float(x), float(y)) for x, y in re.findall(
-        r"[ML]\s*([-+]?\d*\.?\d+)\s*[, ]\s*([-+]?\d*\.?\d+)", path_data
-    )]
+    """Return endpoints from SVG-like paths; curves/arcs are safely linearized.
+
+    M/L and lowercase variants are fully tokenized; A/C/Q commands retain their
+    endpoint so outline geometry is not silently discarded.
+    """
+    tokens = re.findall(r"[MmLlAaCcQqZz]|[-+]?(?:\d*\.)?\d+(?:[eE][-+]?\d+)?", path_data)
+    points, command, i, current = [], None, 0, (0.0, 0.0)
+    counts = {"M": 2, "L": 2, "A": 7, "C": 6, "Q": 4}
+    while i < len(tokens):
+        token = tokens[i]
+        if re.fullmatch(r"[A-Za-z]", token):
+            command = token
+            i += 1
+            if command.upper() == "Z":
+                continue
+        if not command or command.upper() not in counts:
+            i += 1
+            continue
+        n = counts[command.upper()]
+        if i + n > len(tokens) or any(re.fullmatch(r"[A-Za-z]", t) for t in tokens[i:i+n]):
+            command = None
+            continue
+        nums = [float(t) for t in tokens[i:i+n]]
+        if command.upper() == "A":
+            target = (nums[5], nums[6])
+        elif command.upper() == "C":
+            target = (nums[4], nums[5])
+        elif command.upper() == "Q":
+            target = (nums[2], nums[3])
+        else:
+            target = (nums[0], nums[1])
+        if command.islower():
+            target = (target[0] + current[0], target[1] + current[1])
+        current = target
+        points.append(target)
+        i += n
+        if command.upper() == "M":
+            command = "l" if command.islower() else "L"
+    return points
 
 
 def _point(point):
