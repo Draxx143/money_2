@@ -48,6 +48,8 @@ class TestAIResponse(unittest.TestCase):
         reply = format_ai_reply({"message": "پاسخ", "suggested_tests": ["اندازه‌گیری ولتاژ"]})
         self.assertEqual(reply, "پاسخ\n\n• اندازه‌گیری ولتاژ")
         self.assertNotIn("Suggested Tests", reply)
+        mixed = format_ai_reply({"message": "Check the socket power at U1."}, "لطفاً بررسی کن")
+        self.assertEqual(mixed, "بررسی سوکت برق در U1.")
 
     @mock.patch("pcb_analyzer.ai_agent.threading.Thread", InlineThread)
     def test_persian_prompt_explicitly_requires_persian_response(self):
@@ -58,7 +60,8 @@ class TestAIResponse(unittest.TestCase):
         ask_ai_async(client, "سلام، چرا LED روشن نمی‌شود؟", None, TestPointStore(), callback)
         system_prompt = client.generate.call_args.args[1]
         self.assertIn("Persian (Farsi)", system_prompt)
-        self.assertIn("فقط به زبان فارسی", system_prompt)
+        self.assertIn("کاملاً به فارسی", system_prompt)
+        self.assertIn("واژه‌های عمومی انگلیسی", system_prompt)
 
     def test_context_keeps_testpoints_without_board(self):
         store = TestPointStore()

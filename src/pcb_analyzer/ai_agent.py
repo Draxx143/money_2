@@ -149,18 +149,43 @@ def _system_prompt_for(user_prompt: str) -> str:
     prompt = SYSTEM_PROMPT + "\n\nSTRICT LANGUAGE RULE: Every user-facing sentence must use the exact language of the user's question. Do not answer in English unless the user asked in English. Keep JSON keys and component references in English."
     if any(char in user_prompt for char in "پچژگکی"):
         prompt += ("\nThe user's question is in Persian (Farsi). Write the message and every suggested test only in Persian. "
-                   "پاسخ و تمام پیشنهادهای آزمایش را فقط به زبان فارسی بنویسید؛ از انگلیسی استفاده نکنید.")
+                   "پاسخ و همهٔ پیشنهادها را کاملاً به فارسی بنویسید. واژه‌های عمومی انگلیسی مثل socket و power را ترجمه کنید؛ "
+                   "فقط نام دقیق قطعه، شماره قطعه، شناسهٔ نت و سرواژه‌های استاندارد لازم را عیناً نگه دارید. "
+                   "از جملهٔ انگلیسی استفاده نکنید.")
     elif any("\u0600" <= char <= "\u06ff" for char in user_prompt):
         prompt += "\nThe user's question is in Arabic. Write the message and suggested tests only in Arabic."
     return prompt
 
 
-def format_ai_reply(data: dict) -> str:
-    """Format only the AI answer and its tests, without UI/system chatter."""
+def format_ai_reply(data: dict, user_prompt: str = "") -> str:
+    """Format the answer without chatter and translate common prose for Persian users."""
     message = data.get("message") or ""
     tests = data.get("suggested_tests", [])
     if tests:
         message += "\n\n" + "\n".join(f"• {test}" for test in tests)
+    if any(char in user_prompt for char in "پچژگکی"):
+        translations = (
+            (r"\bpower supply\b", "منبع تغذیه"),
+            (r"\bsockets\b", "سوکت‌ها"),
+            (r"\bsocket\b", "سوکت"),
+            (r"\bvoltage\b", "ولتاژ"),
+            (r"\bpower\b", "برق"),
+            (r"\binput\b", "ورودی"),
+            (r"\boutput\b", "خروجی"),
+            (r"\bmeasure(?:ment)?\b", "اندازه‌گیری"),
+            (r"\bcheck\b", "بررسی"),
+            (r"\bthe\b", ""),
+            (r"\bare\b", "هستند"),
+            (r"\bis\b", "است"),
+            (r"\bat\b", "در"),
+            (r"\bto\b", "به"),
+            (r"\band\b", "و"),
+            (r"\bfrom\b", "از"),
+        )
+        for pattern, translation in translations:
+            message = re.sub(pattern, translation, message, flags=re.IGNORECASE)
+        message = re.sub(r"\s+", " ", message)
+        message = re.sub(r"\s+([،؛.!؟:])", r"\1", message)
     return message
 
 def parse_ai_response(raw: str) -> dict:

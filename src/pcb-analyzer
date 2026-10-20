@@ -34,6 +34,7 @@ from pcb_analyzer.testpoints import (
 from pcb_analyzer.viewer import PcbViewer
 from pcb_analyzer.ai_agent import OllamaClient, ask_ai_async, format_ai_reply
 from pcb_analyzer.report import export_csv
+from pcb_analyzer.ui_layout import clamp_workspace_divider
 from pcb_analyzer.altium_parser import AltiumParserError, parse_pcbdoc
 from pcb_analyzer.easyeda_parser import parse_easyeda_json
 
@@ -316,10 +317,14 @@ class MainWindow(Gtk.ApplicationWindow):
         paned.pack2(inner, resize=True, shrink=False)
 
         hpaned = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL)
-        hpaned.set_position(1000)
+        self.workspace_paned = hpaned
+        hpaned.set_position(880)
+        hpaned.connect("size-allocate", self._constrain_workspace_paned)
+        hpaned.connect("notify::position", self._constrain_workspace_paned)
         inner.pack_start(hpaned, True, True, 0)
 
         self.viewer = PcbViewer()
+        self.viewer.set_size_request(500, 260)
         self.viewer.connect("component-selected", self.on_viewer_selected)
         viewer_shell = Gtk.Overlay()
         viewer_shell.add(self.viewer)
@@ -334,6 +339,12 @@ class MainWindow(Gtk.ApplicationWindow):
 
         inner.pack_start(self.build_bottom_notebook(), True, True, 0)
         vbox.pack_start(self.build_statusbar(), False, False, 0)
+
+    def _constrain_workspace_paned(self, paned, _event=None):
+        width = paned.get_allocation().width
+        position = clamp_workspace_divider(width, paned.get_position())
+        if position != paned.get_position():
+            paned.set_position(position)
 
     # ---- Menus / toolbar ----
     def build_viewer_tools(self):
@@ -1215,6 +1226,7 @@ class MainWindow(Gtk.ApplicationWindow):
         if not text:
             return
         self.ai_entry.set_text("")
+        self._last_ai_user_prompt = text
         self.append_chat("You", text, "#00D1B2")
 
         self._ai_request_in_flight = True
@@ -1243,7 +1255,7 @@ class MainWindow(Gtk.ApplicationWindow):
             return
 
         data = res["data"]
-        full_reply = format_ai_reply(data) or "No message."
+        full_reply = format_ai_reply(data, getattr(self, "_last_ai_user_prompt", "")) or "No message."
         suspects = data.get("suspect_components", [])
 
         self.append_chat("AI", full_reply, "#F1F5F9")

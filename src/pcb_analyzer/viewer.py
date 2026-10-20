@@ -8,6 +8,7 @@ gi.require_version("Gdk", "3.0")
 from gi.repository import Gdk, GObject, Gtk
 
 from .model import Board, pad_board_position, Component
+from .ui_layout import component_label_font_sizes
 
 
 # Layer colours (KiCad-like, dark theme friendly)
@@ -420,7 +421,8 @@ class PcbViewer(Gtk.DrawingArea):
             silk_layer = "B.SilkS" if self._canonical_layer(c.layer) == "B.Cu" else "F.SilkS"
             px, py = self._layer_to_px(ref_x, ref_y, silk_layer)
             cr.select_font_face("Sans", 0, 0)
-            cr.set_font_size(11)
+            reference_size, value_size = component_label_font_sizes(self.scale)
+            cr.set_font_size(reference_size)
             if is_sel:
                 cr.set_source_rgb(*SELECT_COLOR)
             elif is_hover:
@@ -434,7 +436,7 @@ class PcbViewer(Gtk.DrawingArea):
                 value_x = c.value_x if c.value_x is not None else c.x
                 value_y = c.value_y if c.value_y is not None else c.y + 1.5
                 vx, vy = self._layer_to_px(value_x, value_y, silk_layer)
-                cr.set_font_size(9)
+                cr.set_font_size(value_size)
                 cr.move_to(vx + 2, vy - 2)
                 cr.show_text(c.value)
 
