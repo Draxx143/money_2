@@ -39,6 +39,11 @@ class TestAltiumAsciiParser(unittest.TestCase):
         self.assertEqual(capacitor.pads[0].net, "GND")
         self.assertTrue(any(t.component_ref == "C1" for t in board.tracks))
         self.assertAlmostEqual(capacitor.x, 53.0700, places=2)
+        # Through-hole pads use Altium's case-insensitive MULTILAYER spelling;
+        # canonicalize it so they remain visible in both top and bottom views.
+        header = board.find_component("H1")
+        self.assertEqual(header.pads[0].layers, ["Multi-Layer"])
+        self.assertGreater(header.pads[0].hole_diameter, 0)
 
 
 if __name__ == "__main__":

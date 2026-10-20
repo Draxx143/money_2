@@ -92,9 +92,8 @@ class PcbViewer(Gtk.DrawingArea):
             if self._layer_is_visible(track.layer):
                 points.extend(((track.start_x, track.start_y), (track.end_x, track.end_y)))
         for component in board.components:
-            if not self._component_is_visible(component):
-                continue
-            points.append((component.x, component.y))
+            if self._component_is_visible(component):
+                points.append((component.x, component.y))
             points.extend((component.x + pad.x, component.y + pad.y)
                           for pad in component.pads
                           if any(self._layer_is_visible(layer) for layer in (pad.layers or [component.layer])))
@@ -201,10 +200,16 @@ class PcbViewer(Gtk.DrawingArea):
         self.queue_draw()
 
     def _layer_is_visible(self, layer):
-        if layer in ("Edge.Cuts", "Multi-Layer", "All.Cu"):
+        normalized = str(layer or "").strip().upper().replace("_", "-")
+        if normalized in ("EDGE.CUTS", "MULTI-LAYER", "MULTILAYER", "ALL.CU"):
             return True
         prefix = "B." if self.view_side == "Bottom" else "F."
-        return layer.startswith(prefix)
+        return normalized.startswith(prefix.upper())
+
+    def _component_has_visible_pad(self, component):
+        return any(any(self._layer_is_visible(layer)
+                       for layer in (pad.layers or [component.layer]))
+                   for pad in component.pads)
 
     def _component_is_visible(self, component):
         if component is None:
@@ -299,7 +304,8 @@ class PcbViewer(Gtk.DrawingArea):
 
         # Components (pads + reference)
         for c in self.board.components:
-            if not self._component_is_visible(c):
+            component_visible = self._component_is_visible(c)
+            if not component_visible and not self._component_has_visible_pad(c):
                 continue
             is_sel = c.reference == self.selected_ref
             is_hover = c.reference == self.hover_ref
@@ -330,6 +336,9 @@ class PcbViewer(Gtk.DrawingArea):
                     cr.set_source_rgb(0.0, 0.0, 0.0)
                     cr.arc(px, py, pad.hole_diameter * self.scale / 2, 0, 2 * math.pi)
                     cr.fill()
+
+            if not component_visible:
+                continue
 
             # Altium stores designator/value text at independent board
             # coordinates; use those positions rather than centering labels on
@@ -580,7 +589,7 @@ class PcbViewer(Gtk.DrawingArea):
         best = None
         best_d2 = r * r
         for c in self.board.components:
-            if not self._component_is_visible(c):
+            if not self._component_is_visible(c) and not self._component_has_visible_pad(c):
                 continue
             d2 = (c.x - wx) ** 2 + (c.y - wy) ** 2
             if d2 <= best_d2:

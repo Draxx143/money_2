@@ -36,7 +36,7 @@ from pcb_analyzer.easyeda_parser import parse_easyeda_json
 
 APP_NAME = "PCB Analyzer"
 APP_SUBTITLE = "Analysis & Diagnostics Workbench"
-APP_VERSION = "0.6.16"
+APP_VERSION = "0.6.17"
 
 BG_MAIN = "#0B0F14"
 BG_PANEL = "#121923"

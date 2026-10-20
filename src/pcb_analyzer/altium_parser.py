@@ -253,6 +253,7 @@ def _ascii_layer(name: str) -> str:
     return {
         "TOP": "F.Cu", "BOTTOM": "B.Cu",
         "TOPOVERLAY": "F.SilkS", "BOTTOMOVERLAY": "B.SilkS",
+        "MULTILAYER": "Multi-Layer", "MULTI-LAYER": "Multi-Layer",
     }.get(name.upper(), name)
 
 
