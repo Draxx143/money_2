@@ -64,6 +64,15 @@ class TestKnowledgeBase(unittest.TestCase):
         self.assertIn("LOCAL TROUBLESHOOTING CASE ARCHIVE", sent_prompt)
         self.assertIn("Prior AI response (unverified)", sent_prompt)
 
+    def test_chat_history_persists_only_user_and_ai_messages(self):
+        self.kb.save_chat_message("You", "U1 is hot", "/tmp/board.kicad_pcb")
+        self.kb.save_chat_message("AI", "Check current draw", "/tmp/board.kicad_pcb")
+        with self.assertRaises(ValueError):
+            self.kb.save_chat_message("System", "internal status")
+        messages = self.kb.load_chat_messages()
+        self.assertEqual([message["sender"] for message in messages], ["You", "AI"])
+        self.assertEqual(messages[0]["board_path"], "/tmp/board.kicad_pcb")
+
 
 if __name__ == "__main__":
     unittest.main()

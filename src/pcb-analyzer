@@ -34,6 +34,7 @@ from pcb_analyzer.testpoints import (
 from pcb_analyzer.viewer import PcbViewer
 from pcb_analyzer.ai_agent import OllamaClient, ask_ai_async, format_ai_reply
 from pcb_analyzer.knowledge_base import KnowledgeBase
+from pcb_analyzer.settings import load_settings, save_settings
 from pcb_analyzer.report import export_csv
 from pcb_analyzer.ui_layout import clamp_workspace_divider
 from pcb_analyzer.altium_parser import AltiumParserError, parse_pcbdoc
@@ -297,7 +298,10 @@ class TestPointDialog(Gtk.Dialog):
 
 class MainWindow(Gtk.ApplicationWindow):
     def __init__(self, app):
-        super().__init__(application=app, title=f"{APP_NAME} — {APP_SUBTITLE}")
+        self.user_settings = load_settings()
+        display_name = self.user_settings["application_name"]
+        subtitle = self.user_settings["subtitle"]
+        super().__init__(application=app, title=f"{display_name} — {subtitle}" if subtitle else display_name)
         self.set_default_size(1600, 950)
         self.set_name("main-window")
         self.board: Board = None
@@ -650,10 +654,22 @@ class MainWindow(Gtk.ApplicationWindow):
         # Input area
         input_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
         input_box.set_margin_top(6); input_box.set_margin_start(6); input_box.set_margin_end(6); input_box.set_margin_bottom(6)
-        self.ai_entry = Gtk.Entry()
-        self.ai_entry.set_placeholder_text("Describe the symptom (e.g. No power on U1)…")
-        self.ai_entry.connect("activate", self.on_ai_send)
-        input_box.pack_start(self.ai_entry, True, True, 0)
+        composer_scroll = Gtk.ScrolledWindow()
+        composer_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        composer_scroll.set_size_request(-1, 76)
+        self.ai_entry = Gtk.TextView()
+        self.ai_entry.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
+        self.ai_entry.set_accepts_tab(False)
+        self.ai_entry.set_left_margin(8)
+        self.ai_entry.set_right_margin(8)
+        self.ai_entry.set_top_margin(6)
+        self.ai_entry.set_bottom_margin(6)
+        self._composer_placeholder = "Describe the symptom (e.g. No power on U1)…"
+        self.ai_entry.get_buffer().set_text(self._composer_placeholder)
+        self.ai_entry.connect("focus-in-event", self._clear_composer_placeholder)
+        self.ai_entry.connect("key-press-event", self._on_composer_key)
+        composer_scroll.add(self.ai_entry)
+        input_box.pack_start(composer_scroll, True, True, 0)
         self.btn_ai_send = Gtk.Button(label="Send")
         self.btn_ai_send.connect("clicked", self.on_ai_send)
         input_box.pack_start(self.btn_ai_send, False, False, 0)
@@ -662,8 +678,11 @@ class MainWindow(Gtk.ApplicationWindow):
         vbox.pack_start(ai_box, False, False, 0)
 
         # State
-        self.ollama_client = OllamaClient()
+        self.ollama_client = OllamaClient(
+            host=self.user_settings["ollama_host"], model=self.user_settings["ollama_model"])
         self.ai_knowledge_base = KnowledgeBase()
+        for message in self.ai_knowledge_base.load_chat_messages():
+            self.append_chat(message["sender"], message["content"], persist=False)
 
         insp_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         insp_box.pack_start(panel_title("Component Inspector"), False, False, 0)
@@ -1202,9 +1221,38 @@ class MainWindow(Gtk.ApplicationWindow):
                 self.show_error(str(exc))
                 return
             self.ollama_client.model = model_entry.get_text().strip() or self.ollama_client.model
+            self.user_settings["ollama_host"] = self.ollama_client.host
+            self.user_settings["ollama_model"] = self.ollama_client.model
+            try:
+                save_settings(self.user_settings)
+            except OSError as exc:
+                logger.exception("Could not save AI settings")
+                self.show_error(f"Settings could not be saved: {exc}")
         dlg.destroy()
 
-    def append_chat(self, sender, text, color="#F1F5F9"):
+    def _composer_text(self):
+        buffer = self.ai_entry.get_buffer()
+        return buffer.get_text(buffer.get_start_iter(), buffer.get_end_iter(), True)
+
+    def _clear_composer_placeholder(self, _widget, _event):
+        if self._composer_text() == self._composer_placeholder:
+            self.ai_entry.get_buffer().set_text("")
+        return False
+
+    def _on_composer_key(self, _widget, event):
+        if event.keyval in (Gdk.KEY_Return, Gdk.KEY_KP_Enter):
+            if event.state & Gdk.ModifierType.SHIFT_MASK:
+                return False
+            self.on_ai_send(self.btn_ai_send)
+            return True
+        return False
+
+    def append_chat(self, sender, text, color="#F1F5F9", persist=True):
+        if persist and sender in ("You", "AI") and hasattr(self, "ai_knowledge_base"):
+            try:
+                self.ai_knowledge_base.save_chat_message(sender, text, self.board_path or "")
+            except Exception:
+                logger.exception("Could not save conversation history")
         weight = 700 if sender != "AI" else 400
         key = (color, weight)
         if key not in self._chat_tags:
@@ -1224,10 +1272,10 @@ class MainWindow(Gtk.ApplicationWindow):
     def on_ai_send(self, _w):
         if self._ai_request_in_flight:
             return
-        text = self.ai_entry.get_text().strip()
-        if not text:
+        text = self._composer_text().strip()
+        if not text or text == self._composer_placeholder:
             return
-        self.ai_entry.set_text("")
+        self.ai_entry.get_buffer().set_text("")
         self._last_ai_user_prompt = text
         self.append_chat("You", text, "#00D1B2")
 
@@ -1255,6 +1303,9 @@ class MainWindow(Gtk.ApplicationWindow):
 
         if "error" in res:
             self.append_chat("AI", res["error"], "#9b2226")
+            # Keep failed input available for editing and retrying.
+            if not self._composer_text().strip():
+                self.ai_entry.get_buffer().set_text(getattr(self, "_last_ai_user_prompt", ""))
             return
 
         data = res["data"]
@@ -1302,8 +1353,8 @@ class MainWindow(Gtk.ApplicationWindow):
                         Gtk.STOCK_OK, Gtk.ResponseType.OK)
         grid = Gtk.Grid(row_spacing=6, column_spacing=12, margin=12)
         dlg.get_content_area().add(grid)
-        name_entry = Gtk.Entry(text=APP_NAME)
-        sub_entry = Gtk.Entry(text=APP_SUBTITLE)
+        name_entry = Gtk.Entry(text=self.user_settings["application_name"])
+        sub_entry = Gtk.Entry(text=self.user_settings["subtitle"])
         grid.attach(Gtk.Label(label="Application name:", xalign=0), 0, 0, 1, 1)
         grid.attach(name_entry, 1, 0, 1, 1)
         grid.attach(Gtk.Label(label="Subtitle:", xalign=0), 0, 1, 1, 1)
@@ -1312,12 +1363,20 @@ class MainWindow(Gtk.ApplicationWindow):
         if dlg.run() == Gtk.ResponseType.OK:
             name = name_entry.get_text().strip() or APP_NAME
             sub = sub_entry.get_text().strip()
+            self.user_settings["application_name"] = name
+            self.user_settings["subtitle"] = sub
+            try:
+                save_settings(self.user_settings)
+            except OSError as exc:
+                logger.exception("Could not save application settings")
+                self.show_error(f"Settings could not be saved: {exc}")
             self.set_title(f"{name} — {sub}" if sub else name)
         dlg.destroy()
 
     def on_about(self, _w):
         d = Gtk.AboutDialog(transient_for=self, modal=True)
-        d.set_program_name(APP_NAME); d.set_version(APP_VERSION); d.set_comments(APP_SUBTITLE)
+        d.set_program_name(self.user_settings["application_name"])
+        d.set_version(APP_VERSION); d.set_comments(self.user_settings["subtitle"])
         d.run(); d.destroy()
 
     def show_error(self, message):

@@ -62,6 +62,37 @@ class KnowledgeBase:
                 status TEXT NOT NULL DEFAULT 'unverified'
             )""")
             db.execute("CREATE INDEX IF NOT EXISTS cases_created ON troubleshooting_cases(created_at)")
+            db.execute("""CREATE TABLE IF NOT EXISTS chat_messages (
+                id INTEGER PRIMARY KEY,
+                created_at REAL NOT NULL,
+                board_path TEXT NOT NULL DEFAULT '',
+                sender TEXT NOT NULL,
+                content TEXT NOT NULL
+            )""")
+            db.execute("CREATE INDEX IF NOT EXISTS chat_created ON chat_messages(id)")
+
+    def save_chat_message(self, sender: str, content: str, board_path: str = "") -> int:
+        """Persist only user/assistant conversation messages, not transient UI status."""
+        if sender not in ("You", "AI"):
+            raise ValueError("Only You and AI messages can be saved")
+        with self._connect() as db:
+            cursor = db.execute(
+                "INSERT INTO chat_messages(created_at, board_path, sender, content) VALUES (?, ?, ?, ?)",
+                (time.time(), str(board_path or ""), sender, str(content)))
+            return int(cursor.lastrowid)
+
+    def load_chat_messages(self, limit: int = 500):
+        """Load recent conversation messages in chronological order."""
+        with self._connect() as db:
+            rows = db.execute(
+                "SELECT sender, content, board_path FROM chat_messages ORDER BY id DESC LIMIT ?",
+                (max(0, int(limit)),)).fetchall()
+        return [{"sender": row["sender"], "content": row["content"],
+                 "board_path": row["board_path"]} for row in reversed(rows)]
+
+    def clear_chat_history(self):
+        with self._connect() as db:
+            db.execute("DELETE FROM chat_messages")
 
     def archive_case(self, problem: str, response: str, references: Iterable[str] = (),
                      component_names: str = "", suggested_tests: Iterable[str] = (),

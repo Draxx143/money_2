@@ -1,0 +1,36 @@
+# Repository engineering audit
+
+Audit performed on branch `arena/19d73563-money-2`, release baseline 0.6.30.
+
+## Baseline
+
+`python3 -m unittest discover -s tests -v` — **92 tests passed** before this audit's edits. The graphical GTK application cannot be exercised in this environment unless PyGObject/GTK 3 are installed; UI changes therefore require downstream GUI smoke testing.
+
+## Prioritized findings
+
+| Priority / status | Location | Finding and reproduction | Root cause | Correction / regression test |
+|---|---|---|---|---|
+| High / confirmed, corrected | `src/pcb-analyzer`, `MainWindow.build_right_panels`, `on_ai_send` | The AI composer used `Gtk.Entry`, so it could not accept multiline questions or Shift+Enter; failed requests also cleared the submitted text. | Single-line widget and no retry draft restoration. | Replaced with a wrapped `Gtk.TextView`, Enter-to-send / Shift+Enter newline behavior, and preservation of failed input. GUI runtime test remains blocked by missing GTK in this environment. |
+| High / confirmed, corrected | `src/pcb_analyzer/knowledge_base.py`, `MainWindow.append_chat` | AI and user conversation disappeared on app restart. | Only the diagnostic case archive was persisted; chat messages existed only in a `Gtk.TextBuffer`. | SQLite conversation history now loads on startup and saves only `You`/`AI` messages. Unit test covers persistence and rejects status/system messages. |
+| Medium / confirmed, corrected | `MainWindow.on_settings`, `MainWindow.on_ai_config` | Display name and Ollama configuration appeared editable but reverted after restart. | Dialog values only changed live GTK/client objects. | Settings now persist atomically under the user's XDG config directory with mode 0600. Unit tests cover defaults, invalid files, private permissions and allowed values. |
+| Medium / confirmed, corrected | `src/pcb_analyzer/kicad_parser.py`, `parse_sexpr` | A valid top-level S-expression followed by arbitrary tokens was accepted because the parser returned without consuming the remaining tokens. Reproduce with `parse_sexpr('(kicad_pcb (version 20240108)) trailing')`. | No end-of-input validation after parsing one root expression. | Parser now rejects trailing tokens; regression test added. |
+| Medium / confirmed, corrected | `VERSION`, `pyproject.toml`, `src/pcb_analyzer/__init__.py` | Release version was independently hardcoded in package metadata and runtime fallback, allowing inconsistent versions. | Multiple static version declarations. | `VERSION` is now the sole version value; setuptools reads it dynamically and runtime reads the adjacent version file (fallback is `0+unknown`). Debian packaging already derives its version and filename from `VERSION`. |
+| High / confirmed limitation | `src/pcb_analyzer/diagnostics.py`, `evaluate_testpoint` | Measurements are compared as parsed scalar values and a default percentage tolerance; measurement category, test conditions and dimensional consistency are not evaluated. Existing API only records a simple expected/actual pair. | Diagnostic rule is intentionally a basic scalar comparator, not a measurement-specific electronics engine. | Not silently changed because continuity/diode/current/voltage semantics require richer validated data. Separate design task: type-aware evaluation with explicit units, conditions and test-specific outcomes. |
+| High / missing feature | `src/pcb_analyzer/knowledge_base.py` | Only previous user/AI troubleshooting cases are stored. The app does not yet import/search datasheet PDFs or broad verified reference documents. | No licensed, validated source corpus or document ingestion pipeline is bundled. | No claim of comprehensive component knowledge is made. Next: provenance-aware document import/search with permission-cleared sources and extracted citations. |
+| High / missing feature | `src/pcb-analyzer`, GTK window | The existing shell has a component explorer, PCB canvas, AI panel and bottom notebook, but no full conversation/project sidebar, saved investigations, light theme, structured evidence cards, or complete ChatGPT-style workflow. | The existing product is a compact GTK engineering workbench, not a complete session/project manager. | Existing PCB UI retained; redesign remains incremental to avoid replacing working board visualization without GUI validation. |
+| High / limitation | `src/pcb_analyzer/altium_parser.py`, `parse_pcbdoc` | Binary `.PcbDoc` parsing depends on optional `altium-monkey`; it is not a bundled Debian runtime dependency. Altium ASCII and binary are distinct capabilities. | Third-party parser is optional and not guaranteed available in the base OS repositories. | Error directs users to export ASCII or install the optional library. Do not advertise the optional binary parser as guaranteed in a clean install. |
+| High / missing feature | `src/pcb_analyzer/pdf_viewer.py` | PDF files are rendered for visual reference; no OCR, parsed schematic connectivity or trustworthy netlist is produced from them. | PDF renderer is a viewer, not a schematic parser. | Keep PDF support described as visual-only unless a real extraction pipeline is implemented and validated. |
+| Medium / suspected, requires GUI fixture | `src/pcb_analyzer/viewer.py`, coordinate transforms | The model uses one shared pad transform and board-side mirroring. Parser coordinate conventions vary, and only existing fixtures validate the current transformations. | No comprehensive cross-format rotated/mirrored-pad golden fixtures are present. | Do not claim all top/bottom and rotation cases verified. Add authoritative fixtures per format and compare physical pad centers before changing transforms. |
+
+## Confirmed input capabilities in current code
+
+- KiCad `.kicad_pcb`: S-expression PCB parsing and existing board fixture coverage; this is not a KiCad schematic parser.
+- EasyEDA Standard PCB JSON: native JSON shape/track/pad parsing with fixture tests.
+- Altium ASCII PCB export: parser exists and has fixture coverage.
+- Altium binary `.PcbDoc`: optional `altium-monkey` integration; not guaranteed by the base `.deb`.
+- PDF: visual rendering only, not electrical connectivity extraction.
+- Raster schematic image/OCR: not implemented.
+
+## Environment constraints
+
+The test suite uses `unittest` and local fixtures. GTK runtime smoke tests and a real package installation/launch must be done on a Debian/Ubuntu desktop with GTK 3, PyGObject, Cairo bindings and Poppler GI installed. Do not interpret a successful `dpkg-deb` build as proof that a graphical desktop launch was tested.

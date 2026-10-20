@@ -37,6 +37,8 @@ def parse_sexpr(text: str) -> list:
         return tok
 
     result = parse()
+    if pos != len(tokens):
+        raise SexpError("unexpected tokens after top-level expression")
     return result
 
 

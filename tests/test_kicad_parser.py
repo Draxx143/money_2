@@ -14,6 +14,11 @@ class TestParser(unittest.TestCase):
         path = os.path.join(HERE, "fixtures", "sample_board.kicad_pcb")
         self.board = parse_pcb(path)
 
+    def test_rejects_trailing_data_after_top_level_expression(self):
+        from pcb_analyzer.kicad_parser import SexpError, parse_sexpr
+        with self.assertRaisesRegex(SexpError, "after top-level"):
+            parse_sexpr('(kicad_pcb (version 20240108)) trailing')
+
     def test_components_parsed(self):
         refs = [c.reference for c in self.board.components]
         self.assertIn("R1", refs)

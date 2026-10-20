@@ -8,6 +8,7 @@
 # Python-generated files
 __pycache__/
 *.py[cod]
+*.egg-info/
 
 # Local test-point data
 *.testpoints.json
