@@ -19,7 +19,7 @@ Requirements: `dpkg-deb`, Python 3, and the GTK 3 / Poppler GI runtime packages.
 sh scripts/build-deb.sh
 ```
 
-The package is written to `dist/pcb-analyzer_0.5.0_all.deb`.
+The package is written to `dist/pcb-analyzer_0.5.0_all.deb`. A built copy is also checked in at `artifacts/pcb-analyzer_0.5.0_all.deb`.
 Install it on a Debian/Ubuntu system with:
 
 ```sh

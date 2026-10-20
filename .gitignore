@@ -2,6 +2,8 @@
 /dist/
 /build/
 *.deb
+!/artifacts/
+!/artifacts/*.deb
 
 # Python-generated files
 __pycache__/
