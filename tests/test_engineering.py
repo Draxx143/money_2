@@ -140,3 +140,30 @@ class TestFormat(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class TestNotationAndFiniteValues(unittest.TestCase):
+    def test_r_notation(self):
+        from pcb_analyzer.engineering import parse_value
+        for text, expected in (("4k7", 4700), ("2M2", 2.2e6), ("0R47", .47),
+                               ("3V3", 3.3), ("1u5", 1.5e-6)):
+            with self.subTest(text=text): self.assertAlmostEqual(parse_value(text), expected)
+
+    def test_finite_and_ambiguous_units(self):
+        from pcb_analyzer.engineering import parse_value
+        self.assertIsNone(parse_value("1e999"))
+        self.assertIsNone(parse_value("nan"))
+        self.assertEqual(parse_value("5 mil"), 5.0)  # unit word is not an SI prefix
+        self.assertEqual(parse_value("10 ohm"), 10.0)
+        self.assertEqual(parse_value("3 min"), 3.0)
+
+    def test_tolerance_forms_and_rejects_invalid_values(self):
+        from pcb_analyzer.engineering import parse_tolerance
+        for text in ("+-5%", "5 %", "±5%"):
+            self.assertEqual(parse_tolerance(text), 5.0)
+        for text in ("-5%", "nan", "inf"):
+            self.assertIsNone(parse_tolerance(text))
+
+    def test_zero_expected_optional_absolute_tolerance(self):
+        from pcb_analyzer.engineering import within_tolerance
+        self.assertTrue(within_tolerance(.03, 0, 5))  # legacy default
+        self.assertFalse(within_tolerance(.03, 0, 5, abs_tol=.01))

@@ -49,16 +49,18 @@ def evaluate_testpoint(tp: TestPoint) -> Tuple[str, str]:
     ok = within_tolerance(measured, expected, tol)
     low, high = expected_range(expected, tol)
 
+    zero_note = (f" Zero expected value uses absolute tolerance {tol / 100.0:g} {unit}."
+                 if expected == 0 else "")
     if ok:
         return STATUS_PASS, (
             f"Measured {fmt_engineering(measured, unit)} is within "
             f"{fmt_engineering(low, unit)}–{fmt_engineering(high, unit)} "
-            f"(expected {fmt_engineering(expected, unit)} ±{tol:g}%)."
+            f"(expected {fmt_engineering(expected, unit)} ±{tol:g}%).{zero_note}"
         )
     return STATUS_FAIL, (
         f"Measured {fmt_engineering(measured, unit)} is outside "
         f"{fmt_engineering(low, unit)}–{fmt_engineering(high, unit)} "
-        f"(expected {fmt_engineering(expected, unit)} ±{tol:g}%)."
+        f"(expected {fmt_engineering(expected, unit)} ±{tol:g}%).{zero_note}"
     )
 
 
