@@ -36,7 +36,7 @@ from pcb_analyzer.easyeda_parser import parse_easyeda_json
 
 APP_NAME = "PCB Analyzer"
 APP_SUBTITLE = "Analysis & Diagnostics Workbench"
-APP_VERSION = "0.6.20"
+APP_VERSION = "0.6.21"
 
 BG_MAIN = "#0B0F14"
 BG_PANEL = "#121923"
@@ -378,10 +378,12 @@ class MainWindow(Gtk.ApplicationWindow):
         layer_button.set_size_request(34, 34)
         layer_button.get_style_context().add_class("layer-menu-button")
         palette.pack_start(layer_button, False, False, 0)
-        self.layer_popover = Gtk.Popover.new(layer_button)
+        self.layer_popover = Gtk.Popover()
+        self.layer_popover.set_relative_to(layer_button)
+        self.layer_popover.set_size_request(238, 300)
         self.layer_popover.get_style_context().add_class("layers-popover")
         popover_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
-        popover_box.set_size_request(215, -1)
+        popover_box.set_size_request(220, 280)
         popover_box.set_margin_top(8); popover_box.set_margin_bottom(8)
         popover_box.set_margin_start(8); popover_box.set_margin_end(8)
         popover_title = Gtk.Label(label="Layer visibility", xalign=0)
@@ -395,9 +397,9 @@ class MainWindow(Gtk.ApplicationWindow):
         layer_scroll.set_size_request(-1, 245)
         layer_scroll.add(self.layer_list)
         popover_box.pack_start(layer_scroll, True, True, 0)
+        self.layer_popover_content = popover_box
         self.layer_popover.add(popover_box)
         layer_button.set_popover(self.layer_popover)
-        self.layer_popover.connect("show", lambda _popover: self.refresh_layer_panel())
         for icon, tip, initial, callback in (
             ("grid", "Show or hide grid", True, self.viewer.toggle_grid),
             ("zones", "Show or hide copper zones", True, self.viewer.toggle_zones),
@@ -418,6 +420,8 @@ class MainWindow(Gtk.ApplicationWindow):
             empty = Gtk.Label(label="Open a board to see its layers.", xalign=0)
             row = Gtk.ListBoxRow(); row.add(empty); self.layer_list.add(row)
             self.layer_list.show_all()
+            self.layer_popover_content.show_all()
+            self.layer_popover.queue_resize()
             return
 
         colors = {
@@ -455,6 +459,8 @@ class MainWindow(Gtk.ApplicationWindow):
         self.layer_list.show_all()
         if selected_row:
             self.layer_list.select_row(selected_row)
+        self.layer_popover_content.show_all()
+        self.layer_popover.queue_resize()
 
     def draw_eye_icon(self, area, cr, toggle):
         active = toggle.get_active()
