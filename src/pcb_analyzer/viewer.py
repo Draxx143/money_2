@@ -115,9 +115,7 @@ class PcbViewer(Gtk.DrawingArea):
             d2 = (sx - px) ** 2 + (sy - py) ** 2
             if d2 <= nearest_d2:
                 nearest_d2 = d2
-                display_y = self._vertical_axis_sum() - y if (
-                    self.view_side == "Bottom" and self._canonical_layer(layer).startswith("B.")
-                ) else y
+                display_y = self._vertical_axis_sum() - y if self.view_side == "Bottom" else y
                 nearest = (x, display_y)
         return nearest if nearest is not None else self.px_to_mm(px, py)
 
@@ -237,9 +235,9 @@ class PcbViewer(Gtk.DrawingArea):
                     if layer.startswith(prefix) or layer in ("Multi-Layer", "Edge.Cuts")
                 }
             self.active_layer = "B.Cu" if target_side == "Bottom" else "F.Cu"
-        # EasyEDA displays its bottom-side copper in a reflected board view.
-        # Reflect only bottom-side primitives; Edge.Cuts and Multi-Layer pads
-        # remain fixed so plated holes keep the same board coordinates.
+        # EasyEDA's BottomLayer canvas is viewed from the underside, so the
+        # complete board artwork uses the bottom-view Y reflection. Top stays
+        # in the source board coordinate orientation.
         self.flip_vertical = False
         if self.selected_ref and not self._component_is_visible(
                 next((c for c in self.board.components if c.reference == self.selected_ref), None)):
@@ -290,8 +288,7 @@ class PcbViewer(Gtk.DrawingArea):
 
     def _layer_to_px(self, x, y, layer):
         """Render bottom-side geometry in its bottom-view orientation only."""
-        canonical = self._canonical_layer(layer)
-        if self.view_side == "Bottom" and canonical.startswith("B."):
+        if self.view_side == "Bottom":
             y = self._vertical_axis_sum() - y
         return self.mm_to_px(x, y)
 
