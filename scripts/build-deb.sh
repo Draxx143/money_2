@@ -1,6 +1,7 @@
 #!/bin/sh
 set -eu
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+VERSION=$(cat "$ROOT/VERSION")
 OUTPUT="$ROOT/dist"
 STAGING=$(mktemp -d)
 trap 'rm -rf "$STAGING"' EXIT HUP INT TERM
@@ -13,9 +14,9 @@ mkdir -p "$OUTPUT" \
          "$STAGING/usr/share/pcb-analyzer/src/pcb_analyzer" \
          "$STAGING/usr/share/pcb-analyzer/examples"
 
-cat > "$STAGING/DEBIAN/control" <<'CONTROL'
+cat > "$STAGING/DEBIAN/control" <<CONTROL
 Package: pcb-analyzer
-Version: 0.6.25
+Version: $VERSION
 Section: electronics
 Priority: optional
 Architecture: all
@@ -38,5 +39,5 @@ install -m 644 "$ROOT/tests/fixtures/PCB_PCB_test_pcb_2_2026-10-20.json" \
     "$STAGING/usr/share/pcb-analyzer/examples/PCB_PCB_test_pcb_2_2026-10-20.json"
 
 dpkg-deb --root-owner-group --build "$STAGING" \
-    "$OUTPUT/pcb-analyzer_0.6.25_all.deb"
-echo "Built: $OUTPUT/pcb-analyzer_0.6.25_all.deb"
+    "$OUTPUT/pcb-analyzer_${VERSION}_all.deb"
+echo "Built: $OUTPUT/pcb-analyzer_${VERSION}_all.deb"
