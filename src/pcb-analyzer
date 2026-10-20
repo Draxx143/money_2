@@ -1199,8 +1199,10 @@ class MainWindow(Gtk.ApplicationWindow):
             self.append_chat("Error", res["error"], "#9b2226")
             return
 
+        if res.get("warning"):
+            self.append_chat("System", res["warning"], "#a07600")
         data = res["data"]
-        msg = data.get("message", "No message.")
+        msg = data.get("message") or "No message."
         suspects = data.get("suspect_components", [])
         tests = data.get("suggested_tests", [])
 

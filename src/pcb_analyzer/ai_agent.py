@@ -1,6 +1,7 @@
 """Local AI agent integration (Ollama HTTP API) with structured output."""
 import json
 import re
+from urllib.parse import urlparse
 import threading
 import urllib.request
 import urllib.error
@@ -14,9 +15,19 @@ class OllamaError(Exception):
 
 
 class OllamaClient:
-    def __init__(self, host="http://127.0.0.1:11434", model="llama3"):
-        self.host = host.rstrip("/")
+    def __init__(self, host="http://127.0.0.1:11434", model="llama3", timeout=120, num_ctx=4096):
+        self.host = self._validate_host(host)
         self.model = model
+        self.timeout = timeout
+        self.num_ctx = num_ctx
+
+    @staticmethod
+    def _validate_host(host):
+        host = str(host).strip()
+        parsed = urlparse(host)
+        if parsed.scheme not in ("http", "https") or not parsed.netloc:
+            raise ValueError("Ollama host must be an http:// or https:// URL")
+        return host.rstrip("/")
 
     def list_models(self) -> list:
         """Returns list of locally available model names."""
@@ -31,12 +42,13 @@ class OllamaClient:
     def generate(self, prompt: str, system: str = "") -> str:
         """Send a synchronous request (normally called in a worker thread)."""
         payload = {"model": self.model, "prompt": prompt, "system": system,
-                   "stream": False, "options": {"temperature": 0.1}}
+                   "stream": False, "format": "json",
+                   "options": {"temperature": 0.1, "num_ctx": self.num_ctx}}
         req = urllib.request.Request(
             f"{self.host}/api/generate", data=json.dumps(payload).encode("utf-8"),
             headers={"Content-Type": "application/json"})
         try:
-            with urllib.request.urlopen(req, timeout=120) as resp:
+            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
                 result = json.loads(resp.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
             body = exc.read().decode("utf-8", errors="replace")
@@ -57,28 +69,60 @@ class OllamaClient:
 
 
 
-def build_context(board, store) -> str:
-    """Creates a text summary of the board and measurements for the AI."""
-    lines = []
+def build_context(board, store, max_chars: int = 12000) -> str:
+    """Create prioritized, bounded board/measurement context for the model."""
+    component_lines = []
+    points = list(store)
     if board:
-        lines.append("--- BOARD COMPONENTS ---")
-        for c in board.components:
-            lines.append(f"{c.reference}: {c.value} ({c.footprint})")
+        ranked = []
+        for tp in points:
+            status, reason = evaluate_testpoint(tp)
+            rank = {"Fail": 0, "Unknown": 1, "Pass": 2, "Not Tested": 3}.get(status, 3)
+            line = (f"[{tp.label}] Ref:{tp.reference} Pad:{tp.pad_number} "
+                    f"Expected:{tp.expected_value}{tp.unit} Actual:{tp.actual_value}{tp.unit} "
+                    f"Status:{status}")
+            if status in ("Fail", "Unknown"):
+                line += f" Reason:{reason}"
+            ranked.append((rank, line, tp.reference))
+        ranked.sort(key=lambda item: item[0])
+        priority_refs = []
+        for _, _, ref in ranked:
+            if ref and ref not in priority_refs:
+                priority_refs.append(ref)
+        component_order = sorted(board.components,
+                                 key=lambda c: (0 if c.reference in priority_refs else 1,
+                                                priority_refs.index(c.reference) if c.reference in priority_refs else 0))
+        component_lines = [f"{c.reference}: {c.value} ({c.footprint})" for c in component_order]
     else:
-        lines.append("No board loaded.")
+        ranked = []
 
-    lines.append("\n--- TEST POINTS & MEASUREMENTS ---")
-    if len(store) == 0:
+    lines = ["--- BOARD COMPONENTS ---"]
+    lines.extend(component_lines if board else ["No board loaded."])
+    lines.extend(("", "--- TEST POINTS & MEASUREMENTS ---"))
+    if not points:
         lines.append("No test points recorded.")
     else:
-        for tp in store:
-            status, _ = evaluate_testpoint(tp)
-            lines.append(
-                f"[{tp.label}] Ref:{tp.reference} Pad:{tp.pad_number} "
-                f"Expected:{tp.expected_value}{tp.unit} Actual:{tp.actual_value}{tp.unit} "
-                f"Status:{status}"
-            )
-    return "\n".join(lines)
+        lines.extend(entry[1] for entry in ranked)
+    full = "\n".join(lines)
+    if len(full) <= max_chars:
+        return full
+    # Under pressure, put diagnostic evidence before the component inventory.
+    critical = [entry[1] for entry in ranked if entry[0] <= 1]
+    routine = [entry[1] for entry in ranked if entry[0] > 1]
+    lines = (["--- TEST POINTS & MEASUREMENTS ---"] + critical +
+             ["--- BOARD COMPONENTS ---"] + component_lines + routine)
+    kept, used = [], 0
+    component_header_index = lines.index("--- BOARD COMPONENTS ---")
+    kept_component_count = 0
+    for idx, line in enumerate(lines):
+        if used + len(line) + 1 > max(0, max_chars - 40):
+            break
+        kept.append(line); used += len(line) + 1
+        if idx > component_header_index and idx < component_header_index + 1 + len(component_lines):
+            kept_component_count += 1
+    omitted = max(0, len(component_lines) - kept_component_count)
+    kept.append(f"... {omitted} more components omitted")
+    return "\n".join(kept)
 
 
 SYSTEM_PROMPT = """You are an expert electronics repair technician AI.
@@ -158,9 +202,17 @@ def ask_ai_async(client: OllamaClient, user_prompt: str, board, store, callback:
     """Run AI query in a worker and invoke callback exactly once."""
     def worker():
         try:
+            warning = None
+            models = client.list_models()
+            if models and client.model not in models:
+                previous = client.model
+                client.model = models[0]
+                warning = f"Model {previous} was unavailable; using {client.model}."
             context = build_context(board, store)
             raw = client.generate(f"{context}\n\nUser Symptom/Question:\n{user_prompt}", SYSTEM_PROMPT)
             result = {"data": parse_ai_response(raw)}
+            if warning:
+                result["warning"] = warning
         except (OllamaError, ValueError) as exc:
             result = {"error": str(exc)}
         except Exception as exc:  # last-resort boundary for worker thread
