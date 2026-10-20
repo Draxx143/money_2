@@ -1,0 +1,1 @@
+"""PCB Analyzer — core package."""

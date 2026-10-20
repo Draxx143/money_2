@@ -1,0 +1,62 @@
+%PDF-1.4
+%‚„œ”
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 5 0 R >> >> /Contents 6 0 R >>
+endobj
+4 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 5 0 R >> >> /Contents 7 0 R >>
+endobj
+5 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+6 0 obj
+<< /Length 422 >>
+stream
+BT /F1 24 Tf 72 720 Td (PCB Analyzer - Test Schematic) Tj ET
+BT /F1 14 Tf 72 690 Td (Page 1) Tj ET
+BT /F1 12 Tf 72 650 Td (U1  LM358  Operational Amplifier) Tj ET
+BT /F1 12 Tf 72 630 Td (R1  10k    Resistor) Tj ET
+BT /F1 12 Tf 72 610 Td (C1  100nF  Capacitor) Tj ET
+1 0 0 RG 72 560 m 300 560 l S
+72 560 m 72 520 l S
+300 560 m 300 520 l S
+1 0 0 RG 72 500 m 300 500 l S
+BT /F1 12 Tf 72 470 Td (Search for: U1, R1, C1) Tj ET
+
+endstream
+endobj
+7 0 obj
+<< /Length 322 >>
+stream
+BT /F1 24 Tf 72 720 Td (PCB Analyzer - Test Schematic) Tj ET
+BT /F1 14 Tf 72 690 Td (Page 2) Tj ET
+BT /F1 12 Tf 72 650 Td (U2  NE555  Timer) Tj ET
+BT /F1 12 Tf 72 630 Td (R2  47k    Resistor) Tj ET
+BT /F1 12 Tf 72 610 Td (C2  10uF   Capacitor) Tj ET
+1 0 0 RG 72 560 m 300 560 l S
+72 560 m 72 520 l S
+300 560 m 300 520 l S
+
+endstream
+endobj
+xref
+0 8
+0000000000 65535 f 
+0000000015 00000 n 
+0000000064 00000 n 
+0000000127 00000 n 
+0000000253 00000 n 
+0000000379 00000 n 
+0000000449 00000 n 
+0000000922 00000 n 
+trailer
+<< /Size 8 /Root 1 0 R >>
+startxref
+1295
+%%EOF
