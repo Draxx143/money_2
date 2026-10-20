@@ -123,6 +123,8 @@ class PcbViewer(Gtk.DrawingArea):
             cr.show_text("Open a KiCad .kicad_pcb file to view a board.")
             return
 
+        self._draw_grid(cr, alloc.width, alloc.height)
+
         # Copper pours/zones sit beneath tracks and pads. The Altium ASCII
         # exporter supplies their filled polygon contours as Region records.
         for zone in getattr(self.board, "zones", []):
@@ -149,7 +151,11 @@ class PcbViewer(Gtk.DrawingArea):
             cr.line_to(px2, py2)
         cr.stroke()
 
-        # Tracks
+        # Tracks: round caps and joins keep adjoining Altium segments visually
+        # continuous at acute corners and very small endpoint-rounding errors.
+        # Cairo enum value 1 is LINE_CAP_ROUND / LINE_JOIN_ROUND.
+        cr.set_line_cap(1)
+        cr.set_line_join(1)
         for t in self.board.tracks:
             color = LAYER_COLORS.get(t.layer, (0.6, 0.6, 0.6))
             cr.set_source_rgb(*color)
@@ -214,6 +220,47 @@ class PcbViewer(Gtk.DrawingArea):
         cr.set_font_size(11)
         cr.move_to(10, alloc.height - 10)
         cr.show_text(f"Scale: {self.scale:.2f} px/mm")
+
+    def _draw_grid(self, cr, width, height):
+        """Draw a subtle scale-aware drafting grid behind the board artwork."""
+        scale = max(self.scale, 1e-6)
+        raw_step = 36.0 / scale
+        decade = 10 ** math.floor(math.log10(max(raw_step, 1e-9)))
+        step = next((m * decade for m in (1, 2, 5, 10)
+                     if m * decade >= raw_step), 10 * decade)
+        min_x, min_y = self.px_to_mm(0, 0)
+        max_x, max_y = self.px_to_mm(width, height)
+        x0 = math.floor(min_x / step)
+        x1 = math.ceil(max_x / step)
+        y0 = math.floor(min_y / step)
+        y1 = math.ceil(max_y / step)
+
+        cr.save()
+        cr.set_line_width(1.0)
+        cr.set_source_rgba(0.55, 0.66, 0.78, 0.10)
+        cr.new_path()
+        for index in range(x0, x1 + 1):
+            if index % 5:
+                x, _ = self.mm_to_px(index * step, 0)
+                cr.move_to(x, 0); cr.line_to(x, height)
+        for index in range(y0, y1 + 1):
+            if index % 5:
+                _, y = self.mm_to_px(0, index * step)
+                cr.move_to(0, y); cr.line_to(width, y)
+        cr.stroke()
+
+        cr.set_source_rgba(0.60, 0.72, 0.86, 0.17)
+        cr.new_path()
+        for index in range(x0, x1 + 1):
+            if index % 5 == 0:
+                x, _ = self.mm_to_px(index * step, 0)
+                cr.move_to(x, 0); cr.line_to(x, height)
+        for index in range(y0, y1 + 1):
+            if index % 5 == 0:
+                _, y = self.mm_to_px(0, index * step)
+                cr.move_to(0, y); cr.line_to(width, y)
+        cr.stroke()
+        cr.restore()
 
     # ---- Events ----
     def _on_scroll(self, widget, event):
