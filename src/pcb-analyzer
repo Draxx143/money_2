@@ -35,7 +35,7 @@ from pcb_analyzer.altium_parser import AltiumParserError, parse_pcbdoc
 
 APP_NAME = "PCB Analyzer"
 APP_SUBTITLE = "Analysis & Diagnostics Workbench"
-APP_VERSION = "0.6.6"
+APP_VERSION = "0.6.7"
 
 BG_MAIN = "#0B0F14"
 BG_PANEL = "#121923"
@@ -336,6 +336,9 @@ class MainWindow(Gtk.ApplicationWindow):
         vm = Gtk.Menu()
         view_m.set_submenu(vm)
         self.add_menu_item(vm, "Fit Board to View", self.on_fit_view)
+        flip_item = Gtk.CheckMenuItem(label="Flip Board Vertically")
+        flip_item.connect("toggled", self.on_flip_board)
+        vm.append(flip_item)
         menubar.append(view_m)
 
         for name in ("Board", "Analysis", "Test Points", "Tools", "Database"):
@@ -1021,6 +1024,11 @@ class MainWindow(Gtk.ApplicationWindow):
     # ---- Misc ----
     def on_fit_view(self, _w):
         self.viewer.fit_to_view(); self.viewer.queue_draw()
+
+    def on_flip_board(self, item):
+        self.viewer.set_vertical_flip(item.get_active())
+        self.viewer.fit_to_view()
+        self.viewer.queue_draw()
 
     def on_settings(self, _w):
         dlg = Gtk.Dialog(title="Application Settings", transient_for=self, modal=True)

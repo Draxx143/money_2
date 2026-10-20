@@ -14,7 +14,7 @@ mkdir -p "$OUTPUT" \
 
 cat > "$STAGING/DEBIAN/control" <<'CONTROL'
 Package: pcb-analyzer
-Version: 0.6.6
+Version: 0.6.7
 Section: electronics
 Priority: optional
 Architecture: all
@@ -35,5 +35,5 @@ for f in "$ROOT"/src/pcb_analyzer/*.py; do
 done
 
 dpkg-deb --root-owner-group --build "$STAGING" \
-    "$OUTPUT/pcb-analyzer_0.6.6_all.deb"
-echo "Built: $OUTPUT/pcb-analyzer_0.6.6_all.deb"
+    "$OUTPUT/pcb-analyzer_0.6.7_all.deb"
+echo "Built: $OUTPUT/pcb-analyzer_0.6.7_all.deb"

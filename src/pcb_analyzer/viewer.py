@@ -35,6 +35,7 @@ class PcbViewer(Gtk.DrawingArea):
         self.scale = 4.0          # pixels per mm
         self.offset_x = 0.0
         self.offset_y = 0.0
+        self.flip_vertical = False
         self.selected_ref = None
         self.hover_ref = None
         self.marker = None          # (x_mm, y_mm) or None
@@ -97,18 +98,31 @@ class PcbViewer(Gtk.DrawingArea):
 
     def pan_to(self, x_mm, y_mm):
         alloc = self.get_allocation()
+        view_y = self._vertical_axis_sum() - y_mm if self.flip_vertical else y_mm
         self.offset_x = alloc.width / 2 - x_mm * self.scale
-        self.offset_y = alloc.height / 2 - y_mm * self.scale
+        self.offset_y = alloc.height / 2 - view_y * self.scale
         self.queue_draw()
 
     # ---- Coordinate transform ----
+    def _vertical_axis_sum(self):
+        bounds = self.board.bounds() if self.board else None
+        return (bounds[1] + bounds[3]) if bounds else 0.0
+
+    def set_vertical_flip(self, enabled):
+        self.flip_vertical = bool(enabled)
+        self.queue_draw()
+
     def mm_to_px(self, x, y):
+        if self.flip_vertical:
+            y = self._vertical_axis_sum() - y
         return (x * self.scale + self.offset_x,
                 y * self.scale + self.offset_y)
 
     def px_to_mm(self, x, y):
-        return ((x - self.offset_x) / self.scale,
-                (y - self.offset_y) / self.scale)
+        board_y = (y - self.offset_y) / self.scale
+        if self.flip_vertical:
+            board_y = self._vertical_axis_sum() - board_y
+        return ((x - self.offset_x) / self.scale, board_y)
 
     # ---- Drawing ----
     def _on_draw(self, widget, cr):
@@ -260,8 +274,10 @@ class PcbViewer(Gtk.DrawingArea):
         decade = 10 ** math.floor(math.log10(max(raw_step, 1e-9)))
         step = next((m * decade for m in (1, 2, 5, 10)
                      if m * decade >= raw_step), 10 * decade)
-        min_x, min_y = self.px_to_mm(0, 0)
-        max_x, max_y = self.px_to_mm(width, height)
+        world_a = self.px_to_mm(0, 0)
+        world_b = self.px_to_mm(width, height)
+        min_x, max_x = sorted((world_a[0], world_b[0]))
+        min_y, max_y = sorted((world_a[1], world_b[1]))
         x0 = math.floor(min_x / step)
         x1 = math.ceil(max_x / step)
         y0 = math.floor(min_y / step)
@@ -315,7 +331,8 @@ class PcbViewer(Gtk.DrawingArea):
         self.scale = new_scale
         # keep cursor-anchored point fixed
         self.offset_x = mx - wx * self.scale
-        self.offset_y = my - wy * self.scale
+        view_y = self._vertical_axis_sum() - wy if self.flip_vertical else wy
+        self.offset_y = my - view_y * self.scale
         self.queue_draw()
         return True
 
