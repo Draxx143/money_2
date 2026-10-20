@@ -3,6 +3,7 @@
 All coordinates are in millimetres, matching KiCad's internal units.
 """
 from dataclasses import dataclass, field
+import math
 from typing import List, Optional
 
 
@@ -33,6 +34,21 @@ class Component:
     reference_y: Optional[float] = None
     value_x: Optional[float] = None
     value_y: Optional[float] = None
+
+
+def pad_board_position(comp: Component, pad: Pad) -> tuple:
+    """Return physical pad coordinates in board mm.
+
+    Pad offsets are local footprint coordinates. Apply component rotation in
+    screen coordinates (positive angle rotates toward +Y), reflect local X for
+    bottom-side footprints, then translate by the component origin. The viewer
+    uses this same helper before its independent whole-board bottom-view flip.
+    """
+    x = -pad.x if str(comp.layer).startswith("B.") else pad.x
+    y = pad.y
+    angle = math.radians(comp.rotation or 0.0)
+    return (comp.x + x * math.cos(angle) - y * math.sin(angle),
+            comp.y + x * math.sin(angle) + y * math.cos(angle))
 
 
 @dataclass

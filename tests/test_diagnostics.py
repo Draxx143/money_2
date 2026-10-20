@@ -9,6 +9,7 @@ from pcb_analyzer.diagnostics import (  # noqa: E402
     evaluate_testpoint, suggest_testpoints_for_component, summarize_results,
 )
 from pcb_analyzer.kicad_parser import parse_pcb  # noqa: E402
+from pcb_analyzer.model import Component, Pad, pad_board_position  # noqa: E402
 from pcb_analyzer.testpoints import (  # noqa: E402
     STATUS_FAIL, STATUS_NOT_TESTED, STATUS_PASS, STATUS_UNKNOWN, TestPoint,
 )
@@ -60,6 +61,20 @@ class TestEvaluate(unittest.TestCase):
         tp = make_tp(expected="5", actual="5.26", tolerance="5")
         s, _r = evaluate_testpoint(tp)
         self.assertEqual(s, STATUS_FAIL)
+
+
+class TestPadBoardPosition(unittest.TestCase):
+    def test_cardinal_rotations_and_bottom_mirror(self):
+        pad = Pad("1", 2, 3, 1, 1)
+        expected = {0: (12, 23), 90: (7, 22), 180: (8, 17), 270: (13, 18)}
+        for angle, point in expected.items():
+            with self.subTest(angle=angle):
+                self.assertAlmostEqual(pad_board_position(
+                    Component("U1", "", "", 10, 20, rotation=angle), pad)[0], point[0])
+                self.assertAlmostEqual(pad_board_position(
+                    Component("U1", "", "", 10, 20, rotation=angle), pad)[1], point[1])
+        self.assertEqual(pad_board_position(Component("U1", "", "", 10, 20, layer="B.Cu"), pad), (8, 23))
+        self.assertAlmostEqual(pad_board_position(Component("U1", "", "", 10, 20, rotation=90, layer="B.Cu"), pad)[0], 7)
 
 
 class TestSuggestions(unittest.TestCase):

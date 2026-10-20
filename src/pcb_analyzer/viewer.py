@@ -7,7 +7,7 @@ gi.require_version("Gtk", "3.0")
 gi.require_version("Gdk", "3.0")
 from gi.repository import Gdk, GObject, Gtk
 
-from .model import Board, Component
+from .model import Board, pad_board_position, Component
 
 
 # Layer colours (KiCad-like, dark theme friendly)
@@ -386,7 +386,8 @@ class PcbViewer(Gtk.DrawingArea):
                 if not any(self._layer_is_visible(layer) for layer in pad_layers):
                     continue
                 pad_layer = next(iter(pad.layers), c.layer)
-                px, py = self._layer_to_px(c.x + pad.x, c.y + pad.y, pad_layer)
+                pad_x, pad_y = pad_board_position(c, pad)
+                px, py = self._layer_to_px(pad_x, pad_y, pad_layer)
                 w = pad.width * self.scale
                 h = pad.height * self.scale
                 if is_sel:
