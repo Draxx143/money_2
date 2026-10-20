@@ -33,6 +33,7 @@ from pcb_analyzer.testpoints import (
 )
 from pcb_analyzer.viewer import PcbViewer
 from pcb_analyzer.ai_agent import OllamaClient, ask_ai_async, format_ai_reply
+from pcb_analyzer.knowledge_base import KnowledgeBase
 from pcb_analyzer.report import export_csv
 from pcb_analyzer.ui_layout import clamp_workspace_divider
 from pcb_analyzer.altium_parser import AltiumParserError, parse_pcbdoc
@@ -662,6 +663,7 @@ class MainWindow(Gtk.ApplicationWindow):
 
         # State
         self.ollama_client = OllamaClient()
+        self.ai_knowledge_base = KnowledgeBase()
 
         insp_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         insp_box.pack_start(panel_title("Component Inspector"), False, False, 0)
@@ -1239,7 +1241,8 @@ class MainWindow(Gtk.ApplicationWindow):
             GLib.idle_add(self._handle_ai_response, res)
 
         try:
-            ask_ai_async(self.ollama_client, text, self.board, self.store, on_result)
+            ask_ai_async(self.ollama_client, text, self.board, self.store, on_result,
+                         knowledge_base=self.ai_knowledge_base)
         except Exception as exc:  # Last-resort worker startup boundary.
             logger.exception("Could not start AI worker")
             from gi.repository import GLib

@@ -8,6 +8,7 @@ import urllib.error
 from typing import Callable, Optional
 
 from .diagnostics import evaluate_testpoint
+from .knowledge_base import component_references
 
 
 class OllamaError(Exception):
@@ -132,6 +133,7 @@ CRITICAL INSTRUCTIONS:
 2. LANGUAGE: You MUST reply in the EXACT SAME LANGUAGE that the user used to ask their question. If they ask in English, reply in English. If they ask in Persian (Farsi), reply in Persian.
 3. JSON KEYS: The JSON keys MUST ALWAYS BE IN ENGLISH exactly as shown below.
 4. COMPONENT REFERENCES: Component references (like U1, R5), exact part numbers, and standard units may remain in English.
+5. ARCHIVE: Use retrieved prior cases only as unverified leads, never as confirmed engineering facts. Prefer verified board data, measurements, and manufacturer datasheets. State uncertainty when ratings or part identity are unknown.
 
 Schema:
 {
@@ -282,8 +284,9 @@ def parse_ai_response(raw: str) -> dict:
             "suggested_tests": as_list(data.get("suggested_tests"))}
 
 
-def ask_ai_async(client: OllamaClient, user_prompt: str, board, store, callback: Callable):
-    """Run AI query in a worker and invoke callback exactly once."""
+def ask_ai_async(client: OllamaClient, user_prompt: str, board, store, callback: Callable,
+                 knowledge_base=None):
+    """Run AI query, retrieve related archived cases, and archive the new encounter."""
     def worker():
         try:
             warning = None
@@ -293,9 +296,28 @@ def ask_ai_async(client: OllamaClient, user_prompt: str, board, store, callback:
                 client.model = models[0]
                 warning = f"Model {previous} was unavailable; using {client.model}."
             context = build_context(board, store)
+            if knowledge_base is not None:
+                references = component_references(board, user_prompt)
+                context += "\n\n" + knowledge_base.format_relevant_cases(
+                    user_prompt, references=references)
             raw = client.generate(f"{context}\n\nUser Symptom/Question:\n{user_prompt}",
                                   _system_prompt_for(user_prompt))
-            result = {"data": apply_safety_policy(parse_ai_response(raw), user_prompt)}
+            data = apply_safety_policy(parse_ai_response(raw), user_prompt)
+            if knowledge_base is not None:
+                references = component_references(
+                    board, user_prompt, data.get("message", ""),
+                    suspects=data.get("suspect_components", []))
+                names = []
+                if board:
+                    selected = {ref.casefold() for ref in references}
+                    names = [f"{c.reference}={c.value}" for c in board.components
+                             if c.reference.casefold() in selected]
+                # Archive every completed interaction. Model-derived diagnoses remain unverified.
+                knowledge_base.archive_case(
+                    user_prompt, data.get("message", ""), references=references,
+                    component_names="; ".join(names),
+                    suggested_tests=data.get("suggested_tests", []), status="unverified")
+            result = {"data": data}
             if warning:
                 result["warning"] = warning
         except (OllamaError, ValueError) as exc:
