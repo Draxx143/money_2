@@ -19,11 +19,11 @@ Requirements: `dpkg-deb`, Python 3, and the GTK 3 / Poppler GI runtime packages.
 sh scripts/build-deb.sh
 ```
 
-The package is written to `dist/pcb-analyzer_0.6.22_all.deb`. A built copy is also checked in at `artifacts/pcb-analyzer_0.6.22_all.deb`. It includes the supplied EasyEDA board at `/usr/share/pcb-analyzer/examples/PCB_PCB_test_pcb_2_2026-10-20.json`; open this JSON from the File → Open Board dialog for the exact native layout.
+The package is written to `dist/pcb-analyzer_0.6.23_all.deb`. A built copy is also checked in at `artifacts/pcb-analyzer_0.6.23_all.deb`. It includes the supplied EasyEDA board at `/usr/share/pcb-analyzer/examples/PCB_PCB_test_pcb_2_2026-10-20.json`; open this JSON from the File → Open Board dialog for the exact native layout.
 Install it on a Debian/Ubuntu system with:
 
 ```sh
-sudo apt install ./dist/pcb-analyzer_0.6.22_all.deb
+sudo apt install ./dist/pcb-analyzer_0.6.23_all.deb
 ```
 
 The package declares these runtime dependencies: `python3`, `python3-gi`, `gir1.2-gtk-3.0`, and `gir1.2-poppler-0.18`. To launch directly with the bundled EasyEDA board:
