@@ -102,6 +102,7 @@ def parse_pcb_text(text: str) -> Board:
             comp = _parse_footprint(fp, net_names)
             if comp:
                 board.components.append(comp)
+                board.outline.segments.extend(_footprint_edge_segments(fp, comp))
         except (ValueError, TypeError, IndexError):
             continue
 
@@ -144,9 +145,12 @@ def parse_pcb_text(text: str) -> Board:
         start = _child(gr, "start")
         end = _child(gr, "end")
         if start and end:
-            x1, y1 = _floats(start, 1, 2)
-            x2, y2 = _floats(end, 1, 2)
-            board.outline.segments.append((x1, y1, x2, y2))
+            try:
+                x1, y1 = _floats(start, 1, 2)
+                x2, y2 = _floats(end, 1, 2)
+                board.outline.segments.append((x1, y1, x2, y2))
+            except (ValueError, IndexError, SexpError):
+                continue
 
     for gr in _children(root, "gr_circle"):
         layer = _child(gr, "layer")
@@ -190,14 +194,15 @@ def parse_pcb_text(text: str) -> Board:
         start = _child(gr, "start")
         end = _child(gr, "end")
         if start and end:
-            x1, y1 = _floats(start, 1, 2)
-            x2, y2 = _floats(end, 1, 2)
-            board.outline.segments.extend([
-                (x1, y1, x2, y1),
-                (x2, y1, x2, y2),
-                (x2, y2, x1, y2),
-                (x1, y2, x1, y1),
-            ])
+            try:
+                x1, y1 = _floats(start, 1, 2)
+                x2, y2 = _floats(end, 1, 2)
+                board.outline.segments.extend([
+                    (x1, y1, x2, y1), (x2, y1, x2, y2),
+                    (x2, y2, x1, y2), (x1, y2, x1, y1),
+                ])
+            except (ValueError, IndexError, SexpError):
+                continue
 
     for zone in _children(root, "zone"):
         filled = _children(zone, "filled_polygon")
@@ -219,6 +224,53 @@ def parse_pcb_text(text: str) -> Board:
                 continue
 
     return board
+
+
+def _footprint_edge_segments(fp: list, comp: Component):
+    """Transform footprint-local Edge.Cuts primitives to board segments."""
+    def transform(point):
+        x, y = point
+        if comp.layer.startswith("B."):
+            x = -x
+        angle = math.radians(comp.rotation)
+        return (comp.x + x * math.cos(angle) - y * math.sin(angle),
+                comp.y + x * math.sin(angle) + y * math.cos(angle))
+
+    segments = []
+    for kind in ("fp_line", "fp_arc", "fp_rect", "fp_circle"):
+        for primitive in _children(fp, kind):
+            layer = _child(primitive, "layer")
+            if not layer or len(layer) < 2 or layer[1] != "Edge.Cuts":
+                continue
+            try:
+                if kind == "fp_rect":
+                    start, end = _child(primitive, "start"), _child(primitive, "end")
+                    if not start or not end:
+                        continue
+                    x1, y1 = _floats(start, 1, 2); x2, y2 = _floats(end, 1, 2)
+                    points = [(x1,y1),(x2,y1),(x2,y2),(x1,y2),(x1,y1)]
+                elif kind == "fp_circle":
+                    center, end = _child(primitive, "center"), _child(primitive, "end")
+                    if not center or not end:
+                        continue
+                    cx, cy = _floats(center, 1, 2); ex, ey = _floats(end, 1, 2)
+                    radius = math.hypot(ex-cx, ey-cy)
+                    points = [(cx + radius*math.cos(i*math.pi/36),
+                               cy + radius*math.sin(i*math.pi/36)) for i in range(73)]
+                else:
+                    start, end = _child(primitive, "start"), _child(primitive, "end")
+                    if not start or not end:
+                        continue
+                    points = [_floats(start, 1, 2), _floats(end, 1, 2)]
+                    middle = _child(primitive, "mid")
+                    if middle:
+                        points.insert(1, _floats(middle, 1, 2))
+                board_points = [transform(point) for point in points]
+                segments.extend((a[0],a[1],b[0],b[1])
+                                for a,b in zip(board_points, board_points[1:]))
+            except (ValueError, TypeError, IndexError, SexpError):
+                continue
+    return segments
 
 
 def _parse_footprint(fp: list, net_names=None):

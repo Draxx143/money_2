@@ -42,6 +42,7 @@ class TestParser(unittest.TestCase):
           (net 1 "GND")
           (module "Legacy:Part" (layer "B.Cu") (at 10 20 90)
             (fp_text reference "Q1") (fp_text value "FET")
+            (fp_line (start 0 0) (end 1 0) (layer "Edge.Cuts"))
             (pad "1" thru_hole circle (at 1 2 45) (size 2 2) (drill 0.8)
               (layers "*.Cu") (net 1 "GND")))
           (segment (start 0 0) (end 1 1) (width 0.2) (layer "B.Cu") (net 1))
@@ -57,6 +58,13 @@ class TestParser(unittest.TestCase):
         self.assertEqual(board.tracks[0].net, "GND")
         self.assertEqual(board.vias[0].net, "GND")
         self.assertGreater(len(board.outline.segments), 60)
+        self.assertIn((10.0, 20.0, 10.0, 19.0), board.outline.segments)
+
+    def test_malformed_edge_primitive_does_not_abort_other_geometry(self):
+        board = parse_pcb_text('(kicad_pcb (gr_line (start bad 0) (end 1 1) (layer "Edge.Cuts")) '
+                               '(segment (start 0 0) (end 2 2) (width 0.2) (layer "F.Cu")))')
+        self.assertEqual(len(board.tracks), 1)
+        self.assertEqual(board.outline.segments, [])
 
     def test_bounds(self):
         b = self.board.bounds()
