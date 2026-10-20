@@ -15,7 +15,7 @@ mkdir -p "$OUTPUT" \
 
 cat > "$STAGING/DEBIAN/control" <<'CONTROL'
 Package: pcb-analyzer
-Version: 0.6.23
+Version: 0.6.24
 Section: electronics
 Priority: optional
 Architecture: all
@@ -38,5 +38,5 @@ install -m 644 "$ROOT/tests/fixtures/PCB_PCB_test_pcb_2_2026-10-20.json" \
     "$STAGING/usr/share/pcb-analyzer/examples/PCB_PCB_test_pcb_2_2026-10-20.json"
 
 dpkg-deb --root-owner-group --build "$STAGING" \
-    "$OUTPUT/pcb-analyzer_0.6.23_all.deb"
-echo "Built: $OUTPUT/pcb-analyzer_0.6.23_all.deb"
+    "$OUTPUT/pcb-analyzer_0.6.24_all.deb"
+echo "Built: $OUTPUT/pcb-analyzer_0.6.24_all.deb"

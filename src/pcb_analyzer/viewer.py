@@ -39,6 +39,7 @@ class PcbViewer(Gtk.DrawingArea):
         self.view_side = "Top"
         self.layer_names = []
         self.visible_layers = set()
+        self.side_layer_visibility = {}
         self.active_layer = None
         self.selected_ref = None
         self.hover_ref = None
@@ -88,30 +89,36 @@ class PcbViewer(Gtk.DrawingArea):
         bounds = board.bounds()
         if bounds:
             x1, y1, x2, y2 = bounds
-            points.extend(((x1, y1), (x1, y2), (x2, y1), (x2, y2)))
+            points.extend(((x1, y1, "Edge.Cuts"), (x1, y2, "Edge.Cuts"),
+                       (x2, y1, "Edge.Cuts"), (x2, y2, "Edge.Cuts")))
         for x1, y1, x2, y2 in board.outline.segments:
-            points.extend(((x1, y1), (x2, y2)))
+            points.extend(((x1, y1, "Edge.Cuts"), (x2, y2, "Edge.Cuts")))
         for track in board.tracks:
             if self._layer_is_visible(track.layer):
-                points.extend(((track.start_x, track.start_y), (track.end_x, track.end_y)))
+                points.extend(((track.start_x, track.start_y, track.layer),
+                               (track.end_x, track.end_y, track.layer)))
         for component in board.components:
             if self._component_is_visible(component):
-                points.append((component.x, component.y))
-            points.extend((component.x + pad.x, component.y + pad.y)
-                          for pad in component.pads
-                          if any(self._layer_is_visible(layer) for layer in (pad.layers or [component.layer])))
+                points.append((component.x, component.y, component.layer))
+            for pad in component.pads:
+                for layer in (pad.layers or [component.layer]):
+                    if self._layer_is_visible(layer):
+                        points.append((component.x + pad.x, component.y + pad.y, layer))
         self.snap_points = list(dict.fromkeys(points))
 
     def _snap_measure_point(self, px, py):
         """Snap within 12 screen pixels to a known PCB feature."""
         nearest = None
         nearest_d2 = 12.0 ** 2
-        for x, y in self.snap_points:
-            sx, sy = self.mm_to_px(x, y)
+        for x, y, layer in self.snap_points:
+            sx, sy = self._layer_to_px(x, y, layer)
             d2 = (sx - px) ** 2 + (sy - py) ** 2
             if d2 <= nearest_d2:
                 nearest_d2 = d2
-                nearest = (x, y)
+                display_y = self._vertical_axis_sum() - y if (
+                    self.view_side == "Bottom" and self._canonical_layer(layer).startswith("B.")
+                ) else y
+                nearest = (x, display_y)
         return nearest if nearest is not None else self.px_to_mm(px, py)
 
     def zoom_by(self, factor):
@@ -147,8 +154,15 @@ class PcbViewer(Gtk.DrawingArea):
                           "F.Paste", "B.Paste", "Ratlines", "Edge.Cuts", "Multi-Layer", "Document")
         self.layer_names = [layer for layer in standard_order if layer in discovered]
         self.layer_names.extend(sorted(discovered - set(self.layer_names)))
-        self.visible_layers = set(self.layer_names)
-        self.active_layer = self.layer_names[0] if self.layer_names else None
+        self.view_side = "Top"
+        self.visible_layers = {
+            layer for layer in self.layer_names
+            if layer.startswith("F.") or layer in ("Multi-Layer", "Edge.Cuts")
+        }
+        self.side_layer_visibility = {"Top": set(self.visible_layers)}
+        self.active_layer = "F.Cu" if "F.Cu" in self.layer_names else (
+            self.layer_names[0] if self.layer_names else None
+        )
         self.measure_points.clear()
         self.measurements.clear()
         self.measure_cursor = None
@@ -208,15 +222,24 @@ class PcbViewer(Gtk.DrawingArea):
         self.queue_draw()
 
     def set_view_side(self, side):
-        self.view_side = "Bottom" if side == "Bottom" else "Top"
-        # Side selection applies a useful layer preset; individual layers can
-        # then be independently enabled/disabled in the layer panel.
-        prefix = "B." if self.view_side == "Bottom" else "F."
-        self.visible_layers = {
-            layer for layer in self.layer_names
-            if layer.startswith(prefix) or layer in ("Multi-Layer", "Edge.Cuts")
-        }
-        self.active_layer = "B.Cu" if self.view_side == "Bottom" else "F.Cu"
+        target_side = "Bottom" if side == "Bottom" else "Top"
+        if target_side != self.view_side:
+            if self.view_side:
+                self.side_layer_visibility[self.view_side] = set(self.visible_layers)
+            self.view_side = target_side
+            saved = self.side_layer_visibility.get(target_side)
+            if saved is not None:
+                self.visible_layers = set(saved)
+            else:
+                prefix = "B." if target_side == "Bottom" else "F."
+                self.visible_layers = {
+                    layer for layer in self.layer_names
+                    if layer.startswith(prefix) or layer in ("Multi-Layer", "Edge.Cuts")
+                }
+            self.active_layer = "B.Cu" if target_side == "Bottom" else "F.Cu"
+        # EasyEDA displays its bottom-side copper in a reflected board view.
+        # Reflect only bottom-side primitives; Edge.Cuts and Multi-Layer pads
+        # remain fixed so plated holes keep the same board coordinates.
         self.flip_vertical = False
         if self.selected_ref and not self._component_is_visible(
                 next((c for c in self.board.components if c.reference == self.selected_ref), None)):
@@ -238,6 +261,7 @@ class PcbViewer(Gtk.DrawingArea):
         else:
             self.visible_layers.discard(layer)
         self.active_layer = layer
+        self.side_layer_visibility[self.view_side] = set(self.visible_layers)
         self._build_snap_points()
         self.queue_draw()
 
@@ -263,6 +287,13 @@ class PcbViewer(Gtk.DrawingArea):
             y = self._vertical_axis_sum() - y
         return (x * self.scale + self.offset_x,
                 y * self.scale + self.offset_y)
+
+    def _layer_to_px(self, x, y, layer):
+        """Render bottom-side geometry in its bottom-view orientation only."""
+        canonical = self._canonical_layer(layer)
+        if self.view_side == "Bottom" and canonical.startswith("B."):
+            y = self._vertical_axis_sum() - y
+        return self.mm_to_px(x, y)
 
     def px_to_mm(self, x, y):
         board_y = (y - self.offset_y) / self.scale
@@ -294,10 +325,10 @@ class PcbViewer(Gtk.DrawingArea):
                 continue
             zone_color = LAYER_COLORS.get(zone.layer, (0.0, 0.0, 1.0))
             cr.set_source_rgb(*zone_color)
-            x, y = self.mm_to_px(*zone.points[0])
+            x, y = self._layer_to_px(*zone.points[0], zone.layer)
             cr.move_to(x, y)
             for point in zone.points[1:]:
-                cr.line_to(*self.mm_to_px(*point))
+                cr.line_to(*self._layer_to_px(*point, zone.layer))
             cr.close_path()
             cr.fill()
 
@@ -323,8 +354,8 @@ class PcbViewer(Gtk.DrawingArea):
             color = LAYER_COLORS.get(t.layer, (0.6, 0.6, 0.6))
             cr.set_source_rgb(*color)
             cr.set_line_width(max(t.width * self.scale, 1.0))
-            px1, py1 = self.mm_to_px(t.start_x, t.start_y)
-            px2, py2 = self.mm_to_px(t.end_x, t.end_y)
+            px1, py1 = self._layer_to_px(t.start_x, t.start_y, t.layer)
+            px2, py2 = self._layer_to_px(t.end_x, t.end_y, t.layer)
             cr.move_to(px1, py1)
             cr.line_to(px2, py2)
             cr.stroke()
@@ -335,8 +366,8 @@ class PcbViewer(Gtk.DrawingArea):
             for track in self.board.tracks:
                 if track.component_ref != self.selected_ref or not self._layer_is_visible(track.layer):
                     continue
-                px1, py1 = self.mm_to_px(track.start_x, track.start_y)
-                px2, py2 = self.mm_to_px(track.end_x, track.end_y)
+                px1, py1 = self._layer_to_px(track.start_x, track.start_y, track.layer)
+                px2, py2 = self._layer_to_px(track.end_x, track.end_y, track.layer)
                 base_width = max(track.width * self.scale, 1.0)
                 cr.set_source_rgba(*SELECT_COLOR, 0.28)
                 cr.set_line_width(base_width + 7.0)
@@ -357,10 +388,10 @@ class PcbViewer(Gtk.DrawingArea):
                 pad_layers = pad.layers or [c.layer]
                 if not any(self._layer_is_visible(layer) for layer in pad_layers):
                     continue
-                px, py = self.mm_to_px(c.x + pad.x, c.y + pad.y)
+                pad_layer = next(iter(pad.layers), c.layer)
+                px, py = self._layer_to_px(c.x + pad.x, c.y + pad.y, pad_layer)
                 w = pad.width * self.scale
                 h = pad.height * self.scale
-                pad_layer = next(iter(pad.layers), c.layer)
                 if is_sel:
                     cr.set_source_rgb(*SELECT_COLOR)
                 elif is_hover:
@@ -388,7 +419,8 @@ class PcbViewer(Gtk.DrawingArea):
             # component origins (which causes collisions in dense boards).
             ref_x = c.reference_x if c.reference_x is not None else c.x
             ref_y = c.reference_y if c.reference_y is not None else c.y
-            px, py = self.mm_to_px(ref_x, ref_y)
+            silk_layer = "B.SilkS" if self._canonical_layer(c.layer) == "B.Cu" else "F.SilkS"
+            px, py = self._layer_to_px(ref_x, ref_y, silk_layer)
             cr.select_font_face("Sans", 0, 0)
             cr.set_font_size(11)
             if is_sel:
@@ -396,7 +428,6 @@ class PcbViewer(Gtk.DrawingArea):
             elif is_hover:
                 cr.set_source_rgb(*HOVER_COLOR)
             else:
-                silk_layer = "B.SilkS" if c.layer == "B.Cu" else "F.SilkS"
                 cr.set_source_rgb(*LAYER_COLORS[silk_layer])
             cr.move_to(px + 2, py - 2)
             cr.show_text(c.reference)
@@ -404,7 +435,7 @@ class PcbViewer(Gtk.DrawingArea):
             if c.value:
                 value_x = c.value_x if c.value_x is not None else c.x
                 value_y = c.value_y if c.value_y is not None else c.y + 1.5
-                vx, vy = self.mm_to_px(value_x, value_y)
+                vx, vy = self._layer_to_px(value_x, value_y, silk_layer)
                 cr.set_font_size(9)
                 cr.move_to(vx + 2, vy - 2)
                 cr.show_text(c.value)
@@ -626,15 +657,13 @@ class PcbViewer(Gtk.DrawingArea):
     def _hit_test(self, px, py):
         if not self.board:
             return None
-        wx, wy = self.px_to_mm(px, py)
-        # radius in mm scaled by zoom (≈ 20px)
-        r = 20.0 / self.scale
         best = None
-        best_d2 = r * r
+        best_d2 = 20.0 ** 2
         for c in self.board.components:
             if not self._component_is_visible(c) and not self._component_has_visible_pad(c):
                 continue
-            d2 = (c.x - wx) ** 2 + (c.y - wy) ** 2
+            cx, cy = self._layer_to_px(c.x, c.y, c.layer)
+            d2 = (cx - px) ** 2 + (cy - py) ** 2
             if d2 <= best_d2:
                 best_d2 = d2
                 best = c.reference
