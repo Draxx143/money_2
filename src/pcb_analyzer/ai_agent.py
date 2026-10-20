@@ -73,28 +73,26 @@ def build_context(board, store, max_chars: int = 12000) -> str:
     """Create prioritized, bounded board/measurement context for the model."""
     component_lines = []
     points = list(store)
+    ranked = []
+    for tp in points:
+        status, reason = evaluate_testpoint(tp)
+        rank = {"Fail": 0, "Unknown": 1, "Pass": 2, "Not Tested": 3}.get(status, 3)
+        line = (f"[{tp.label}] Ref:{tp.reference} Pad:{tp.pad_number} "
+                f"Expected:{tp.expected_value}{tp.unit} Actual:{tp.actual_value}{tp.unit} "
+                f"Status:{status}")
+        if status in ("Fail", "Unknown"):
+            line += f" Reason:{reason}"
+        ranked.append((rank, line, tp.reference))
+    ranked.sort(key=lambda item: item[0])
     if board:
-        ranked = []
-        for tp in points:
-            status, reason = evaluate_testpoint(tp)
-            rank = {"Fail": 0, "Unknown": 1, "Pass": 2, "Not Tested": 3}.get(status, 3)
-            line = (f"[{tp.label}] Ref:{tp.reference} Pad:{tp.pad_number} "
-                    f"Expected:{tp.expected_value}{tp.unit} Actual:{tp.actual_value}{tp.unit} "
-                    f"Status:{status}")
-            if status in ("Fail", "Unknown"):
-                line += f" Reason:{reason}"
-            ranked.append((rank, line, tp.reference))
-        ranked.sort(key=lambda item: item[0])
         priority_refs = []
-        for _, _, ref in ranked:
-            if ref and ref not in priority_refs:
+        for rank, _, ref in ranked:
+            if rank <= 1 and ref and ref not in priority_refs:
                 priority_refs.append(ref)
         component_order = sorted(board.components,
                                  key=lambda c: (0 if c.reference in priority_refs else 1,
                                                 priority_refs.index(c.reference) if c.reference in priority_refs else 0))
         component_lines = [f"{c.reference}: {c.value} ({c.footprint})" for c in component_order]
-    else:
-        ranked = []
 
     lines = ["--- BOARD COMPONENTS ---"]
     lines.extend(component_lines if board else ["No board loaded."])

@@ -32,15 +32,22 @@ class TestAIResponse(unittest.TestCase):
     def test_callback_called_exactly_once_for_success_and_exception(self):
         callback = mock.Mock()
         client = mock.Mock()
+        client.list_models.return_value = []
         client.generate.return_value = '{"message":"ok"}'
         ask_ai_async(client, "hi", None, TestPointStore(), callback)
         callback.assert_called_once()
+        self.assertIn("data", callback.call_args.args[0])
         callback.reset_mock()
         client.list_models.return_value = []
         client.generate.side_effect = TimeoutError("late")
         ask_ai_async(client, "hi", None, TestPointStore(), callback)
         callback.assert_called_once()
         self.assertIn("late", callback.call_args.args[0]["error"])
+
+    def test_context_keeps_testpoints_without_board(self):
+        store = TestPointStore()
+        store.add(TestPoint(label="orphan", expected_value="5", actual_value="0"))
+        self.assertIn("Status:Fail", build_context(None, store))
 
     def test_host_validation_and_context_truncation_priority(self):
         with self.assertRaises(ValueError): OllamaClient(host="localhost:11434")
