@@ -209,3 +209,45 @@ class TestPointStore:
         self.clear()
         self._path = path
         return False
+
+
+class TestPointUndoStack:
+    """Snapshot-based bounded undo/redo history for TestPointStore."""
+
+    def __init__(self, store: TestPointStore, limit: int = 50):
+        self.limit = max(1, int(limit))
+        self._snapshots = [self._snapshot(store)]
+        self._index = 0
+
+    @staticmethod
+    def _snapshot(store):
+        return [point.to_dict() for point in store]
+
+    @staticmethod
+    def _restore(store, snapshot):
+        store._points = [TestPoint.from_dict(item) for item in snapshot]
+
+    def record(self, store: TestPointStore):
+        """Record the current state after a successful store mutation."""
+        snapshot = self._snapshot(store)
+        if snapshot == self._snapshots[self._index]:
+            return
+        self._snapshots = self._snapshots[:self._index + 1]
+        self._snapshots.append(snapshot)
+        if len(self._snapshots) > self.limit + 1:
+            self._snapshots.pop(0)
+        self._index = len(self._snapshots) - 1
+
+    def undo(self, store: TestPointStore) -> bool:
+        if self._index <= 0:
+            return False
+        self._index -= 1
+        self._restore(store, self._snapshots[self._index])
+        return True
+
+    def redo(self, store: TestPointStore) -> bool:
+        if self._index >= len(self._snapshots) - 1:
+            return False
+        self._index += 1
+        self._restore(store, self._snapshots[self._index])
+        return True

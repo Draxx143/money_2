@@ -10,7 +10,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "..", "src"))
 
 from pcb_analyzer.testpoints import (  # noqa: E402
-    STATUS_NOT_TESTED, STATUS_PASS, TestPoint, TestPointStore,
+    STATUS_NOT_TESTED, STATUS_PASS, TestPoint, TestPointStore, TestPointUndoStack,
 )
 
 
@@ -122,6 +122,19 @@ class TestStore(unittest.TestCase):
             self.assertTrue(os.path.isfile(TestPointStore.companion_path_for_board(board)))
             with mock.patch.object(store, "save", side_effect=OSError("disk")):
                 self.assertFalse(store.autosave())
+
+    def test_snapshot_undo_redo_and_limit(self):
+        store = TestPointStore()
+        history = TestPointUndoStack(store, limit=2)
+        store.add(TestPoint(label="one")); history.record(store)
+        store.add(TestPoint(label="two")); history.record(store)
+        self.assertTrue(history.undo(store))
+        self.assertEqual([p.label for p in store], ["one"])
+        self.assertTrue(history.redo(store))
+        self.assertEqual([p.label for p in store], ["one", "two"])
+        store.add(TestPoint(label="three")); history.record(store)
+        self.assertFalse(history.redo(store))
+        self.assertTrue(history.undo(store))
 
     def test_companion_path(self):
         p = TestPointStore.companion_path_for_board("/tmp/board.kicad_pcb")
