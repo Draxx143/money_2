@@ -32,6 +32,7 @@ from pcb_analyzer.testpoints import (
 )
 from pcb_analyzer.viewer import PcbViewer
 from pcb_analyzer.ai_agent import OllamaClient, ask_ai_async
+from pcb_analyzer.report import export_csv
 from pcb_analyzer.altium_parser import AltiumParserError, parse_pcbdoc
 from pcb_analyzer.easyeda_parser import parse_easyeda_json
 
@@ -490,6 +491,7 @@ class MainWindow(Gtk.ApplicationWindow):
         fm.append(Gtk.SeparatorMenuItem())
         self.add_menu_item(fm, "Load Test Points…", self.on_load_testpoints)
         self.add_menu_item(fm, "Save Test Points…", self.on_save_testpoints)
+        self.add_menu_item(fm, "Export CSV…", self.on_export_csv)
         fm.append(Gtk.SeparatorMenuItem())
         self.add_menu_item(fm, "Quit", self.on_quit)
         menubar.append(file_m)
@@ -853,6 +855,20 @@ class MainWindow(Gtk.ApplicationWindow):
             self.show_error(f"Failed to save test points:\n{exc}")
             return
         self.log_label.set_text(f"Saved {len(self.store)} test point(s) to {os.path.basename(path)}")
+
+    def on_export_csv(self, _w):
+        path = self._choose_save("Export Test Points as CSV", "*.csv",
+                                 default_name="testpoints.csv")
+        if not path:
+            return
+        if not path.lower().endswith(".csv"):
+            path += ".csv"
+        try:
+            export_csv(self.store, path)
+        except OSError as exc:
+            self.show_error(f"Failed to export CSV:\n{exc}")
+            return
+        self.log_label.set_text(f"Exported {len(self.store)} test point(s) to {os.path.basename(path)}")
 
     def _choose_file(self, title, pattern):
         d = Gtk.FileChooserDialog(title=title, parent=self, action=Gtk.FileChooserAction.OPEN, use_header_bar=True)
