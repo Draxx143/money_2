@@ -111,6 +111,18 @@ class TestStore(unittest.TestCase):
                     TestPointStore().save(path)
             self.assertEqual(os.listdir(tmp), [])
 
+    def test_autosave_uses_remembered_path_and_fails_without_crashing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            board = os.path.join(tmp, "board.kicad_pcb")
+            store = TestPointStore()
+            self.assertFalse(store.autosave())
+            store.load_if_exists(board)
+            store.add(TestPoint(label="autosaved"))
+            self.assertTrue(store.autosave())
+            self.assertTrue(os.path.isfile(TestPointStore.companion_path_for_board(board)))
+            with mock.patch.object(store, "save", side_effect=OSError("disk")):
+                self.assertFalse(store.autosave())
+
     def test_companion_path(self):
         p = TestPointStore.companion_path_for_board("/tmp/board.kicad_pcb")
         self.assertEqual(p, "/tmp/board.testpoints.json")

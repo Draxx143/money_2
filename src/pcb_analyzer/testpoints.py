@@ -185,6 +185,17 @@ class TestPointStore:
             valid.append(TestPoint.from_dict(entry))
         self._points, self._path = valid, path
 
+    def autosave(self, path: Optional[str] = None) -> bool:
+        """Save without raising, for best-effort UI autosave callbacks."""
+        target = path or self._path
+        if not target:
+            return False
+        try:
+            self.save(target)
+            return True
+        except (OSError, TypeError, ValueError):
+            return False
+
     def load_if_exists(self, board_path: str) -> bool:
         path = self.companion_path_for_board(board_path)
         if os.path.isfile(path):

@@ -619,6 +619,7 @@ class MainWindow(Gtk.ApplicationWindow):
         self.chat_buffer = Gtk.TextBuffer()
         self._chat_tags = {}
         self._ai_request_in_flight = False
+        self._autosave_source_id = None
         self.chat_view = Gtk.TextView(buffer=self.chat_buffer)
         self.chat_view.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
         self.chat_view.set_editable(False)
@@ -1033,6 +1034,22 @@ class MainWindow(Gtk.ApplicationWindow):
         if tp and tp.x is not None:
             self.viewer.set_marker(tp.x, tp.y)
 
+    def queue_testpoint_autosave(self):
+        if not self.board_path:
+            return
+        from gi.repository import GLib
+        if self._autosave_source_id:
+            GLib.source_remove(self._autosave_source_id)
+        self._autosave_source_id = GLib.timeout_add(1000, self._autosave_testpoints)
+
+    def _autosave_testpoints(self):
+        self._autosave_source_id = None
+        if not self.store.autosave():
+            self.log_label.set_text("Warning: could not autosave test points")
+        else:
+            self.log_label.set_text("Test points autosaved")
+        return False
+
     def on_add_testpoint(self, _w):
         dlg = TestPointDialog(self, self.board)
         if dlg.run() == Gtk.ResponseType.OK:
@@ -1051,6 +1068,7 @@ class MainWindow(Gtk.ApplicationWindow):
             tp = dlg.build_tp()
             self.store.update(tp)
             self.refresh_testpoints_view()
+            self.queue_testpoint_autosave()
         dlg.destroy()
 
     def on_delete_testpoint(self, _w):
@@ -1059,6 +1077,7 @@ class MainWindow(Gtk.ApplicationWindow):
             return
         if self.store.delete(sel.id):
             self.refresh_testpoints_view()
+            self.queue_testpoint_autosave()
 
     def on_goto_testpoint(self, _w):
         sel = self._selected_tp()
@@ -1120,6 +1139,9 @@ class MainWindow(Gtk.ApplicationWindow):
         for tp in suggestions:
             self.store.add(tp)
         self.refresh_testpoints_view()
+        self.queue_testpoint_autosave()
+        self.queue_testpoint_autosave()
+        self.queue_testpoint_autosave()
         self.log_label.set_text(
             f"Added {len(suggestions)} suggested test point(s) for {ref}. "
             f"Fill in the expected values."
