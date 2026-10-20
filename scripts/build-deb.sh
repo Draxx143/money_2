@@ -10,11 +10,12 @@ mkdir -p "$OUTPUT" \
          "$STAGING/DEBIAN" \
          "$STAGING/usr/bin" \
          "$STAGING/usr/share/applications" \
-         "$STAGING/usr/share/pcb-analyzer/src/pcb_analyzer"
+         "$STAGING/usr/share/pcb-analyzer/src/pcb_analyzer" \
+         "$STAGING/usr/share/pcb-analyzer/examples"
 
 cat > "$STAGING/DEBIAN/control" <<'CONTROL'
 Package: pcb-analyzer
-Version: 0.6.7
+Version: 0.6.8
 Section: electronics
 Priority: optional
 Architecture: all
@@ -33,7 +34,9 @@ install -m 644 "$ROOT/packaging/pcb-analyzer.desktop" \
 for f in "$ROOT"/src/pcb_analyzer/*.py; do
     install -m 644 "$f" "$STAGING/usr/share/pcb-analyzer/src/pcb_analyzer/"
 done
+install -m 644 "$ROOT/tests/fixtures/PCB_PCB_test_pcb_2_2026-10-20.json" \
+    "$STAGING/usr/share/pcb-analyzer/examples/PCB_PCB_test_pcb_2_2026-10-20.json"
 
 dpkg-deb --root-owner-group --build "$STAGING" \
-    "$OUTPUT/pcb-analyzer_0.6.7_all.deb"
-echo "Built: $OUTPUT/pcb-analyzer_0.6.7_all.deb"
+    "$OUTPUT/pcb-analyzer_0.6.8_all.deb"
+echo "Built: $OUTPUT/pcb-analyzer_0.6.8_all.deb"

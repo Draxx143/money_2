@@ -16,7 +16,7 @@ import gi
 
 gi.require_version("Gtk", "3.0")
 gi.require_version("Gdk", "3.0")
-from gi.repository import Gdk, Gtk
+from gi.repository import Gdk, Gio, Gtk
 
 from pcb_analyzer.diagnostics import (
     evaluate_testpoint, suggest_testpoints_for_component, summarize_results,
@@ -32,10 +32,11 @@ from pcb_analyzer.testpoints import (
 from pcb_analyzer.viewer import PcbViewer
 from pcb_analyzer.ai_agent import OllamaClient, ask_ai_async
 from pcb_analyzer.altium_parser import AltiumParserError, parse_pcbdoc
+from pcb_analyzer.easyeda_parser import parse_easyeda_json
 
 APP_NAME = "PCB Analyzer"
 APP_SUBTITLE = "Analysis & Diagnostics Workbench"
-APP_VERSION = "0.6.7"
+APP_VERSION = "0.6.8"
 
 BG_MAIN = "#0B0F14"
 BG_PANEL = "#121923"
@@ -610,7 +611,8 @@ class MainWindow(Gtk.ApplicationWindow):
 
         # Filter: All supported formats
         f_all = Gtk.FileFilter()
-        f_all.set_name("All Supported PCB Files (*.kicad_pcb, *.pcbdoc, *.prjpcb)")
+        f_all.set_name("All Supported PCB Files (KiCad, Altium, EasyEDA JSON)")
+        f_all.add_pattern("*.json")
         f_all.add_pattern("*.kicad_pcb")
         f_all.add_pattern("*.pcbdoc")
         f_all.add_pattern("*.PcbDoc")
@@ -623,6 +625,12 @@ class MainWindow(Gtk.ApplicationWindow):
         f_kicad.set_name("KiCad PCB (*.kicad_pcb)")
         f_kicad.add_pattern("*.kicad_pcb")
         dialog.add_filter(f_kicad)
+
+        # Filter: native EasyEDA Standard PCB export
+        f_easyeda = Gtk.FileFilter()
+        f_easyeda.set_name("EasyEDA PCB JSON (*.json)")
+        f_easyeda.add_pattern("*.json")
+        dialog.add_filter(f_easyeda)
 
         # Filter: Altium only
         f_altium = Gtk.FileFilter()
@@ -702,6 +710,8 @@ class MainWindow(Gtk.ApplicationWindow):
         try:
             if lower.endswith(".kicad_pcb"):
                 board = parse_pcb(path)
+            elif lower.endswith(".json"):
+                board = parse_easyeda_json(path)
             elif lower.endswith(".pcbdoc") or lower.endswith(".prjpcb"):
                 # ASCII Altium exports work without the optional altium-monkey
                 # package. The parser reports a useful error for binary files
@@ -709,7 +719,7 @@ class MainWindow(Gtk.ApplicationWindow):
                 board = parse_pcbdoc(path)
             else:
                 self.show_error(f"Unsupported file extension: {path}\n\n"
-                                "Supported formats: .kicad_pcb, .PcbDoc, .PrjPcb")
+                                "Supported formats: .kicad_pcb, .PcbDoc, .PrjPcb, EasyEDA .json")
                 return
         except AltiumParserError as exc:
             self.show_error(f"Altium import failed:\n{exc}")
@@ -1066,7 +1076,21 @@ class MainWindow(Gtk.ApplicationWindow):
 
 class App(Gtk.Application):
     def __init__(self):
-        super().__init__(application_id="io.github.draxx.pcbanalyzer")
+        super().__init__(
+            application_id="io.github.draxx.pcbanalyzer",
+            flags=Gio.ApplicationFlags.HANDLES_OPEN,
+        )
+
+    def do_open(self, files, n_files, hint):
+        self.activate()
+        window = self.get_active_window()
+        if window:
+            for index, source_file in enumerate(files):
+                if index >= n_files:
+                    break
+                path = source_file.get_path()
+                if path:
+                    window.load_board(path)
 
     def do_activate(self):
         w = self.get_active_window()
@@ -1083,7 +1107,7 @@ class App(Gtk.Application):
 
 
 def main():
-    App().run(None)
+    App().run(sys.argv)
 
 
 if __name__ == "__main__":
