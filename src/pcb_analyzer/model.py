@@ -16,6 +16,7 @@ class Pad:
     shape: str = "rect"
     layers: List[str] = field(default_factory=list)
     net: Optional[str] = None
+    hole_diameter: float = 0.0
 
 
 @dataclass
@@ -47,11 +48,20 @@ class BoardOutline:
 
 
 @dataclass
+class BoardZone:
+    """Filled copper polygon in board coordinates."""
+    points: List[tuple] = field(default_factory=list)
+    layer: str = "B.Cu"
+    net: Optional[str] = None
+
+
+@dataclass
 class Board:
     version: str = ""
     components: List[Component] = field(default_factory=list)
     tracks: List[Track] = field(default_factory=list)
     outline: BoardOutline = field(default_factory=BoardOutline)
+    zones: List[BoardZone] = field(default_factory=list)
     layers: List[str] = field(default_factory=list)
 
     def bounds(self):
@@ -63,6 +73,9 @@ class Board:
             xs.extend([t.start_x, t.end_x]); ys.extend([t.start_y, t.end_y])
         for x1, y1, x2, y2 in self.outline.segments:
             xs.extend([x1, x2]); ys.extend([y1, y2])
+        for zone in self.zones:
+            for x, y in zone.points:
+                xs.append(x); ys.append(y)
         if not xs:
             return None
         return (min(xs), min(ys), max(xs), max(ys))

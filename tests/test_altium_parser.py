@@ -16,6 +16,9 @@ class TestAltiumAsciiParser(unittest.TestCase):
         self.assertEqual(len(board.components), 8)
         self.assertEqual(len(board.tracks), 89)
         self.assertEqual(len(board.outline.segments), 4)
+        self.assertEqual(len(board.zones), 2)
+        self.assertEqual(board.zones[0].net, "GND")
+        self.assertGreaterEqual(len(board.zones[0].points), 8)
         self.assertIsNotNone(board.bounds())
 
     def test_decodes_component_metadata_and_pads(self):

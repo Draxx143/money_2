@@ -15,7 +15,7 @@ except ImportError:
     AltiumDesign = None
     AltiumPcbDoc = None
 
-from .model import Board, Component, Pad, Track
+from .model import Board, BoardZone, Component, Pad, Track
 
 
 class AltiumParserError(Exception):
@@ -92,6 +92,7 @@ def _parse_ascii_pcbdoc(path: str) -> Board:
     net_names = {}
     tracks = []
     pads = []
+    regions = []
     text_values = {}
 
     try:
@@ -143,6 +144,8 @@ def _parse_ascii_pcbdoc(path: str) -> Board:
                         ))
                     elif all(key in fields for key in ("X1", "Y1", "X2", "Y2")):
                         tracks.append(fields)
+                elif record == "region":
+                    regions.append(fields)
     except OSError as exc:
         raise AltiumParserError(f"Could not read Altium ASCII board: {exc}") from exc
 
@@ -168,7 +171,33 @@ def _parse_ascii_pcbdoc(path: str) -> Board:
             shape=_ascii_pad_shape(fields.get("SHAPE", "")),
             layers=[_ascii_layer(fields.get("LAYER", "TOP"))],
             net=net_names.get(fields.get("NET", "")),
+            hole_diameter=_ascii_mm(fields.get("HOLESIZE")),
         ))
+
+    # Filled copper is stored in shape-based Region records. Without these,
+    # a board with copper pours looks like bare traces and does not match the
+    # rendered PCB in Altium/KiCad.
+    for fields in regions:
+        layer = _ascii_layer(fields.get("LAYER", ""))
+        if layer not in ("F.Cu", "B.Cu") or "NET" not in fields:
+            continue
+        try:
+            count = int(fields.get("MAINCONTOURVERTEXCOUNT", "0"))
+        except ValueError:
+            continue
+        points = []
+        for index in range(count):
+            x_key, y_key = f"VX{index}", f"VY{index}"
+            if x_key not in fields or y_key not in fields:
+                points = []
+                break
+            points.append((_ascii_mm(fields[x_key]), _ascii_mm(fields[y_key])))
+        if len(points) >= 3:
+            board.zones.append(BoardZone(
+                points=points,
+                layer=layer,
+                net=net_names.get(fields.get("NET", "")),
+            ))
 
     board.tracks.extend(Track(
         start_x=_ascii_mm(item.get("X1")),
@@ -207,7 +236,10 @@ def _ascii_float(value: Optional[str]) -> float:
 
 
 def _ascii_layer(name: str) -> str:
-    return {"TOP": "F.Cu", "BOTTOM": "B.Cu"}.get(name.upper(), name)
+    return {
+        "TOP": "F.Cu", "BOTTOM": "B.Cu",
+        "TOPOVERLAY": "F.SilkS", "BOTTOMOVERLAY": "B.SilkS",
+    }.get(name.upper(), name)
 
 
 def _ascii_pad_shape(shape: str) -> str:

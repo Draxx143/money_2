@@ -14,9 +14,9 @@ from .model import Board, Component
 LAYER_COLORS = {
     "F.Cu": (0.85, 0.20, 0.20),   # red
     "B.Cu": (0.20, 0.45, 0.85),   # blue
-    "Edge.Cuts": (0.95, 0.95, 0.55),  # yellow
+    "Edge.Cuts": (0.88, 0.05, 0.80),  # magenta, like Altium/KiCad board edges
     "F.SilkS": (0.90, 0.90, 0.90),
-    "B.SilkS": (0.70, 0.70, 0.70),
+    "B.SilkS": (0.35, 0.82, 0.25),
 }
 
 SELECT_COLOR = (0.00, 0.82, 0.70)   # accent primary
@@ -123,6 +123,22 @@ class PcbViewer(Gtk.DrawingArea):
             cr.show_text("Open a KiCad .kicad_pcb file to view a board.")
             return
 
+        # Copper pours/zones sit beneath tracks and pads. The Altium ASCII
+        # exporter supplies their filled polygon contours as Region records.
+        for zone in getattr(self.board, "zones", []):
+            if len(zone.points) < 3:
+                continue
+            if zone.layer == "F.Cu":
+                cr.set_source_rgba(0.05, 0.18, 0.96, 0.88)
+            else:
+                cr.set_source_rgba(0.08, 0.24, 0.92, 0.88)
+            x, y = self.mm_to_px(*zone.points[0])
+            cr.move_to(x, y)
+            for point in zone.points[1:]:
+                cr.line_to(*self.mm_to_px(*point))
+            cr.close_path()
+            cr.fill()
+
         # Outline
         cr.set_source_rgb(*LAYER_COLORS["Edge.Cuts"])
         cr.set_line_width(1.5)
@@ -159,8 +175,15 @@ class PcbViewer(Gtk.DrawingArea):
                     cr.set_source_rgb(*HOVER_COLOR)
                 else:
                     cr.set_source_rgb(0.80, 0.80, 0.55)
-                cr.rectangle(px - w / 2, py - h / 2, w, h)
+                if pad.shape.lower() in ("circle", "round"):
+                    cr.arc(px, py, max(w, h) / 2, 0, 2 * math.pi)
+                else:
+                    cr.rectangle(px - w / 2, py - h / 2, w, h)
                 cr.fill()
+                if getattr(pad, "hole_diameter", 0.0) > 0:
+                    cr.set_source_rgb(0.043, 0.059, 0.078)
+                    cr.arc(px, py, pad.hole_diameter * self.scale / 2, 0, 2 * math.pi)
+                    cr.fill()
 
             # Reference label
             px, py = self.mm_to_px(c.x, c.y)
