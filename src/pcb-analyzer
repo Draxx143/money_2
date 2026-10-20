@@ -36,7 +36,7 @@ from pcb_analyzer.easyeda_parser import parse_easyeda_json
 
 APP_NAME = "PCB Analyzer"
 APP_SUBTITLE = "Analysis & Diagnostics Workbench"
-APP_VERSION = "0.6.15"
+APP_VERSION = "0.6.16"
 
 BG_MAIN = "#0B0F14"
 BG_PANEL = "#121923"
@@ -345,7 +345,7 @@ class MainWindow(Gtk.ApplicationWindow):
 
         self.select_tool_button = tool_button("select", "Select component", "select", True)
         self.pan_tool_button = tool_button("pan", "Pan canvas", "pan", True)
-        self.measure_tool_button = tool_button("measure", "Measure: click two snapped points; right-click clears dimensions", "measure", True)
+        self.measure_tool_button = tool_button("measure", "Measure: click two snapped points; Delete removes the last dimension, right-click clears all", "measure", True)
         self.select_tool_button.set_active(True)
         palette.pack_start(Gtk.Separator(orientation=Gtk.Orientation.VERTICAL), False, False, 3)
         for icon, tip, callback in (
@@ -407,8 +407,9 @@ class MainWindow(Gtk.ApplicationWindow):
         return False
 
     def on_side_view_changed(self, combo):
-        is_bottom = combo.get_active() == 1
-        self.viewer.set_vertical_flip(is_bottom)
+        side = "Bottom" if combo.get_active() == 1 else "Top"
+        is_bottom = side == "Bottom"
+        self.viewer.set_view_side(side)
         if hasattr(self, "bottom_view_menu_item"):
             self.bottom_view_menu_item.set_active(is_bottom)
         self.viewer.queue_draw()
@@ -1153,7 +1154,7 @@ class MainWindow(Gtk.ApplicationWindow):
         is_bottom = item.get_active()
         if hasattr(self, "side_view_combo"):
             self.side_view_combo.set_active(1 if is_bottom else 0)
-        self.viewer.set_vertical_flip(is_bottom)
+        self.viewer.set_view_side("Bottom" if is_bottom else "Top")
         self.viewer.fit_to_view()
         self.viewer.queue_draw()
 

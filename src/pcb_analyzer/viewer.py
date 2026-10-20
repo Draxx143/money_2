@@ -36,6 +36,7 @@ class PcbViewer(Gtk.DrawingArea):
         self.offset_x = 0.0
         self.offset_y = 0.0
         self.flip_vertical = False
+        self.view_side = "Top"
         self.selected_ref = None
         self.hover_ref = None
         self.marker = None          # (x_mm, y_mm) or None
@@ -56,12 +57,14 @@ class PcbViewer(Gtk.DrawingArea):
             | Gdk.EventMask.BUTTON_RELEASE_MASK
             | Gdk.EventMask.POINTER_MOTION_MASK
             | Gdk.EventMask.SMOOTH_SCROLL_MASK
+            | Gdk.EventMask.KEY_PRESS_MASK
         )
         self.connect("draw", self._on_draw)
         self.connect("scroll-event", self._on_scroll)
         self.connect("button-press-event", self._on_button_press)
         self.connect("button-release-event", self._on_button_release)
         self.connect("motion-notify-event", self._on_motion)
+        self.connect("key-press-event", self._on_key_press)
 
     # ---- Public API ----
     def set_tool_mode(self, mode):
@@ -86,10 +89,15 @@ class PcbViewer(Gtk.DrawingArea):
         for x1, y1, x2, y2 in board.outline.segments:
             points.extend(((x1, y1), (x2, y2)))
         for track in board.tracks:
-            points.extend(((track.start_x, track.start_y), (track.end_x, track.end_y)))
+            if self._layer_is_visible(track.layer):
+                points.extend(((track.start_x, track.start_y), (track.end_x, track.end_y)))
         for component in board.components:
+            if not self._component_is_visible(component):
+                continue
             points.append((component.x, component.y))
-            points.extend((component.x + pad.x, component.y + pad.y) for pad in component.pads)
+            points.extend((component.x + pad.x, component.y + pad.y)
+                          for pad in component.pads
+                          if any(self._layer_is_visible(layer) for layer in (pad.layers or [component.layer])))
         self.snap_points = list(dict.fromkeys(points))
 
     def _snap_measure_point(self, px, py):
@@ -178,8 +186,30 @@ class PcbViewer(Gtk.DrawingArea):
         return (bounds[1] + bounds[3]) if bounds else 0.0
 
     def set_vertical_flip(self, enabled):
-        self.flip_vertical = bool(enabled)
+        # Legacy API: side switching must filter layers, never mirror coordinates.
+        self.flip_vertical = False
         self.queue_draw()
+
+    def set_view_side(self, side):
+        self.view_side = "Bottom" if side == "Bottom" else "Top"
+        # Top and bottom are layer filters, not geometric reflections.
+        self.flip_vertical = False
+        if self.selected_ref and not self._component_is_visible(
+                next((c for c in self.board.components if c.reference == self.selected_ref), None)):
+            self.selected_ref = None
+        self._build_snap_points()
+        self.queue_draw()
+
+    def _layer_is_visible(self, layer):
+        if layer in ("Edge.Cuts", "Multi-Layer", "All.Cu"):
+            return True
+        prefix = "B." if self.view_side == "Bottom" else "F."
+        return layer.startswith(prefix)
+
+    def _component_is_visible(self, component):
+        if component is None:
+            return False
+        return self._layer_is_visible(component.layer)
 
     def mm_to_px(self, x, y):
         if self.flip_vertical:
@@ -213,7 +243,7 @@ class PcbViewer(Gtk.DrawingArea):
         # Copper pours/zones sit beneath tracks and pads. The Altium ASCII
         # exporter supplies their filled polygon contours as Region records.
         for zone in getattr(self.board, "zones", []) if self.zones_visible else []:
-            if len(zone.points) < 3:
+            if not self._layer_is_visible(zone.layer) or len(zone.points) < 3:
                 continue
             zone_color = LAYER_COLORS.get(zone.layer, (0.0, 0.0, 1.0))
             cr.set_source_rgb(*zone_color)
@@ -240,6 +270,8 @@ class PcbViewer(Gtk.DrawingArea):
         cr.set_line_cap(1)
         cr.set_line_join(1)
         for t in self.board.tracks:
+            if not self._layer_is_visible(t.layer):
+                continue
             color = LAYER_COLORS.get(t.layer, (0.6, 0.6, 0.6))
             cr.set_source_rgb(*color)
             cr.set_line_width(max(t.width * self.scale, 1.0))
@@ -253,7 +285,7 @@ class PcbViewer(Gtk.DrawingArea):
         # ASCII tracks retain their owning component designator.
         if self.selected_ref:
             for track in self.board.tracks:
-                if track.component_ref != self.selected_ref:
+                if track.component_ref != self.selected_ref or not self._layer_is_visible(track.layer):
                     continue
                 px1, py1 = self.mm_to_px(track.start_x, track.start_y)
                 px2, py2 = self.mm_to_px(track.end_x, track.end_y)
@@ -267,10 +299,15 @@ class PcbViewer(Gtk.DrawingArea):
 
         # Components (pads + reference)
         for c in self.board.components:
+            if not self._component_is_visible(c):
+                continue
             is_sel = c.reference == self.selected_ref
             is_hover = c.reference == self.hover_ref
 
             for pad in c.pads:
+                pad_layers = pad.layers or [c.layer]
+                if not any(self._layer_is_visible(layer) for layer in pad_layers):
+                    continue
                 px, py = self.mm_to_px(c.x + pad.x, c.y + pad.y)
                 w = pad.width * self.scale
                 h = pad.height * self.scale
@@ -471,6 +508,7 @@ class PcbViewer(Gtk.DrawingArea):
         return True
 
     def _on_button_press(self, widget, event):
+        self.grab_focus()
         if event.button == 1 and self.tool_mode == "select":
             ref = self._hit_test(event.x, event.y)
             self.selected_ref = ref
@@ -497,6 +535,19 @@ class PcbViewer(Gtk.DrawingArea):
             self._dragging = True
             self._drag_last = (event.x, event.y)
         return True
+
+    def _on_key_press(self, _widget, event):
+        if event.keyval in (Gdk.KEY_Delete, Gdk.KEY_BackSpace):
+            if self.measurements:
+                self.measurements.pop()
+                self.queue_draw()
+                return True
+        if event.keyval == Gdk.KEY_Escape and self.measure_points:
+            self.measure_points.clear()
+            self.measure_cursor = None
+            self.queue_draw()
+            return True
+        return False
 
     def _on_button_release(self, widget, event):
         self._dragging = False
@@ -529,6 +580,8 @@ class PcbViewer(Gtk.DrawingArea):
         best = None
         best_d2 = r * r
         for c in self.board.components:
+            if not self._component_is_visible(c):
+                continue
             d2 = (c.x - wx) ** 2 + (c.y - wy) ** 2
             if d2 <= best_d2:
                 best_d2 = d2
