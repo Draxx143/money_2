@@ -84,12 +84,12 @@ class TestPoint:
 
 
 class TestPointStore:
-    __test__ = False
     """In-memory store with JSON persistence.
 
     Each board file may have a companion file named
     ``<board-basename>.testpoints.json``. Callers may also save explicitly.
     """
+    __test__ = False
 
     def __init__(self):
         self._points: List[TestPoint] = []
